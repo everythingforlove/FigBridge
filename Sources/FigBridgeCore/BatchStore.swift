@@ -6,6 +6,24 @@ public final class BatchStore: Sendable {
     private let decoder: JSONDecoder
 
     public static let exportsDirectoryName = "exports"
+    public static let itemsDirectoryName = "items"
+
+    /// 把字符串里的 `:` 替换为 `-`，让它能直接作为路径片段。Figma 的 nodeId / node name 都可能含 `:`。
+    public static func pathSafe(_ component: String) -> String {
+        component.replacingOccurrences(of: ":", with: "-")
+    }
+
+    /// 条目落盘目录名：`<uuid-小写>-<pathSafe(nodeId)>`。所有写盘/读盘路径都基于此构造。
+    public static func itemDirectoryName(for item: FigmaLinkItem) -> String {
+        "\(item.id.uuidString.lowercased())-\(pathSafe(item.nodeId))"
+    }
+
+    /// 条目所在目录绝对路径：`<batchDirectory>/items/<itemDirectoryName>/`。
+    public static func itemDirectory(in batchDirectory: URL, item: FigmaLinkItem) -> URL {
+        batchDirectory
+            .appendingPathComponent(itemsDirectoryName, isDirectory: true)
+            .appendingPathComponent(itemDirectoryName(for: item), isDirectory: true)
+    }
 
     public init(rootDirectory: URL) {
         self.rootDirectory = rootDirectory
@@ -60,6 +78,33 @@ public final class BatchStore: Sendable {
             throw BatchStoreError.invalidBatchDirectory
         }
         let existing = try loadBatch(at: batchDirectory)
+        return try writeUpdatedBatch(
+            existing: existing,
+            sourceInputText: sourceInputText,
+            agent: agent,
+            promptSnapshot: promptSnapshot,
+            outputDirectory: outputDirectory,
+            mode: mode,
+            parallelism: parallelism,
+            callStrategy: callStrategy,
+            items: items,
+            runLogsByItemID: runLogsByItemID
+        )
+    }
+
+    /// 直接基于已加载的 `existing` 写盘，避免外部已经 load 过又重复 load。
+    private func writeUpdatedBatch(
+        existing: PersistedBatch,
+        sourceInputText: String,
+        agent: AgentProvider,
+        promptSnapshot: String,
+        outputDirectory: URL,
+        mode: GenerationMode,
+        parallelism: Int,
+        callStrategy: AgentCallStrategy,
+        items: [FigmaLinkItem],
+        runLogsByItemID: [UUID: GenerationRunLog]?
+    ) throws -> PersistedBatch {
         let batch = GenerationBatch(
             id: existing.summary.id,
             createdAt: existing.summary.createdAt,
@@ -73,7 +118,7 @@ public final class BatchStore: Sendable {
             items: items,
             runLogsByItemID: runLogsByItemID ?? existing.summary.runLogsByItemID
         )
-        return try writeBatch(batch, into: batchDirectory)
+        return try writeBatch(batch, into: existing.batchDirectory)
     }
 
     public func deleteBatchItem(batchID: String, itemID: UUID) throws {
@@ -90,8 +135,8 @@ public final class BatchStore: Sendable {
             try FileManager.default.removeItem(at: itemDirectory)
         }
 
-        _ = try updateBatch(
-            id: batchID,
+        _ = try writeUpdatedBatch(
+            existing: persisted,
             sourceInputText: persisted.summary.sourceInputText,
             agent: persisted.summary.agent,
             promptSnapshot: persisted.summary.promptSnapshot,
@@ -113,8 +158,8 @@ public final class BatchStore: Sendable {
             return persisted
         }
         updatedItems[index] = item
-        return try updateBatch(
-            id: batchID,
+        return try writeUpdatedBatch(
+            existing: persisted,
             sourceInputText: persisted.summary.sourceInputText,
             agent: persisted.summary.agent,
             promptSnapshot: persisted.summary.promptSnapshot,
@@ -472,12 +517,12 @@ public final class BatchStore: Sendable {
         try batch.sourceInputText.write(to: sourceInputURL, atomically: true, encoding: .utf8)
         try FileManager.default.createDirectory(at: exportsDirectory(for: batchDirectory), withIntermediateDirectories: true)
 
-        let itemsDirectory = batchDirectory.appendingPathComponent("items", isDirectory: true)
+        let itemsDirectory = batchDirectory.appendingPathComponent(Self.itemsDirectoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: itemsDirectory, withIntermediateDirectories: true)
 
         let archivedBatch = try archiveBatchAssetsIfNeeded(batch, batchDirectory: batchDirectory, itemsDirectory: itemsDirectory)
         let existingDirectories = existingItemDirectoryMap(in: itemsDirectory)
-        let validDirectoryNames = Set(archivedBatch.items.map { directoryName(for: $0) })
+        let validDirectoryNames = Set(archivedBatch.items.map { Self.itemDirectoryName(for: $0) })
 
         for (name, url) in existingDirectories where !validDirectoryNames.contains(name) {
             try? FileManager.default.removeItem(at: url)
@@ -485,7 +530,7 @@ public final class BatchStore: Sendable {
 
         var itemDirectories: [URL] = []
         for item in archivedBatch.items {
-            let itemDirectory = itemsDirectory.appendingPathComponent(directoryName(for: item), isDirectory: true)
+            let itemDirectory = itemsDirectory.appendingPathComponent(Self.itemDirectoryName(for: item), isDirectory: true)
             try FileManager.default.createDirectory(at: itemDirectory, withIntermediateDirectories: true)
             let metaURL = itemDirectory.appendingPathComponent("meta.json")
             let data = try encoder.encode(makePersistable(item: item, batchDirectory: batchDirectory))
@@ -515,12 +560,8 @@ public final class BatchStore: Sendable {
         return Dictionary(uniqueKeysWithValues: entries.map { ($0.lastPathComponent, $0) })
     }
 
-    private func directoryName(for item: FigmaLinkItem) -> String {
-        "\(item.id.uuidString.lowercased())-\(item.nodeId.replacingOccurrences(of: ":", with: "-"))"
-    }
-
     private func itemDirectory(in batchDirectory: URL, itemID: UUID) -> URL? {
-        let itemsDirectory = batchDirectory.appendingPathComponent("items", isDirectory: true)
+        let itemsDirectory = batchDirectory.appendingPathComponent(Self.itemsDirectoryName, isDirectory: true)
         guard let entries = try? FileManager.default.contentsOfDirectory(at: itemsDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
             return nil
         }
@@ -531,7 +572,7 @@ public final class BatchStore: Sendable {
     private func archiveBatchAssetsIfNeeded(_ batch: GenerationBatch, batchDirectory: URL, itemsDirectory: URL) throws -> GenerationBatch {
         var archivedBatch = batch
         archivedBatch.items = try batch.items.map { item in
-            let itemDirectory = itemsDirectory.appendingPathComponent(directoryName(for: item), isDirectory: true)
+            let itemDirectory = itemsDirectory.appendingPathComponent(Self.itemDirectoryName(for: item), isDirectory: true)
             return try archiveItemAssetsIfNeeded(item, batchDirectory: batchDirectory, itemDirectory: itemDirectory)
         }
         return archivedBatch
@@ -592,9 +633,7 @@ public final class BatchStore: Sendable {
 
         let resolvedDestinationURL: URL
         if FileManager.default.fileExists(atPath: destinationURL.path) {
-            let existingData = try? Data(contentsOf: destinationURL)
-            let sourceData = try? Data(contentsOf: sourceURL)
-            if existingData == sourceData {
+            if FileManager.default.contentsEqual(atPath: sourceURL.path, andPath: destinationURL.path) {
                 resolvedDestinationURL = destinationURL
             } else {
                 resolvedDestinationURL = uniqueFileURL(in: destinationDirectory, preferredName: preferredName)

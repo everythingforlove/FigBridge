@@ -276,9 +276,9 @@ struct GenerateViewModelTests {
 
         harness.viewModel.beginRenamingItem(second.id)
 
-        #expect(harness.viewModel.renamingItemID == second.id)
-        #expect(harness.viewModel.renamingTitle == "Two")
-        #expect(harness.viewModel.renamingOriginalTitle == "Two")
+        #expect(harness.viewModel.itemRename.identifier == second.id)
+        #expect(harness.viewModel.itemRename.title == "Two")
+        #expect(harness.viewModel.itemRename.originalTitle == "Two")
     }
 
     @Test func addInputShowsHintForEmptyTextAndClearsTextAfterSuccess() throws {
@@ -381,7 +381,7 @@ struct GenerateViewModelTests {
         #expect(harness.viewModel.selectedYAMLText == "name: 1:2")
 
         harness.viewModel.beginRenamingSelectedItem()
-        harness.viewModel.renamingTitle = "Renamed"
+        harness.viewModel.itemRename.title = "Renamed"
         harness.viewModel.commitRename()
 
         #expect(harness.viewModel.items.first?.title == "Renamed")

@@ -221,7 +221,7 @@ struct ViewerViewModelTests {
         viewModel.reload()
         viewModel.selectedItemID = persisted.summary.items[0].id
         viewModel.beginRenamingSelectedItem()
-        viewModel.renamingTitle = "Renamed A"
+        viewModel.itemRename.title = "Renamed A"
         viewModel.commitRename()
 
         #expect(viewModel.selectedItem?.title == "Renamed A")
@@ -249,7 +249,7 @@ struct ViewerViewModelTests {
         viewModel.reload()
         #expect(viewModel.selectedYAMLText == "yaml-a")
         viewModel.beginRenamingSelectedBatch()
-        viewModel.renamingBatchTitle = "batch-renamed"
+        viewModel.batchRename.title = "batch-renamed"
         viewModel.commitBatchRename()
 
         #expect(viewModel.selectedBatchID == "batch-renamed")
@@ -293,7 +293,7 @@ struct ViewerViewModelTests {
         let selectedBeforeRename = try #require(viewModel.selectedBatch)
 
         viewModel.beginRenamingSelectedBatch()
-        viewModel.renamingBatchTitle = "batch-renamed"
+        viewModel.batchRename.title = "batch-renamed"
         viewModel.commitBatchRename()
 
         #expect(callbackOldID == "batch-1")
@@ -358,9 +358,9 @@ struct ViewerViewModelTests {
 
         viewModel.beginRenamingBatch("batch-2")
 
-        #expect(viewModel.renamingBatchID == "batch-2")
-        #expect(viewModel.renamingBatchTitle == "batch-2")
-        #expect(viewModel.renamingOriginalBatchTitle == "batch-2")
+        #expect(viewModel.batchRename.identifier == "batch-2")
+        #expect(viewModel.batchRename.title == "batch-2")
+        #expect(viewModel.batchRename.originalTitle == "batch-2")
     }
 
     @Test func beginRenamingItemUsesProvidedItemID() throws {
@@ -385,9 +385,9 @@ struct ViewerViewModelTests {
 
         viewModel.beginRenamingItem(persisted.summary.items[1].id)
 
-        #expect(viewModel.renamingItemID == persisted.summary.items[1].id)
-        #expect(viewModel.renamingTitle == "Item B")
-        #expect(viewModel.renamingOriginalTitle == "Item B")
+        #expect(viewModel.itemRename.identifier == persisted.summary.items[1].id)
+        #expect(viewModel.itemRename.title == "Item B")
+        #expect(viewModel.itemRename.originalTitle == "Item B")
     }
 
     @Test func continueEditingBatchUsesProvidedBatchID() throws {

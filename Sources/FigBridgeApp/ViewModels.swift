@@ -199,9 +199,7 @@ final class GenerateViewModel: ObservableObject {
     @Published var selectedYAMLText: String?
     @Published var selectedRunLog: GenerationRunLog?
     @Published var selectedRunLogText: String = ""
-    @Published var renamingItemID: UUID?
-    @Published var renamingTitle: String = ""
-    @Published var renamingOriginalTitle: String = ""
+    @Published var itemRename = RenameState<UUID>()
 
     private let settingsViewModel: SettingsViewModel
     private let batchStore: BatchStore
@@ -552,20 +550,17 @@ final class GenerateViewModel: ObservableObject {
         guard let item = items.first(where: { $0.id == itemID }) else {
             return
         }
-        let originalTitle = item.title ?? item.nodeName ?? item.nodeId
-        renamingItemID = item.id
-        renamingTitle = originalTitle
-        renamingOriginalTitle = originalTitle
+        itemRename.begin(item.id, originalTitle: item.title ?? item.nodeName ?? item.nodeId)
     }
 
     func commitRename() {
-        guard let renamingItemID,
+        guard let renamingItemID = itemRename.identifier,
               let index = items.firstIndex(where: { $0.id == renamingItemID }) else {
             cancelRename()
             return
         }
 
-        let trimmedTitle = renamingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTitle = itemRename.trimmedTitle
         items[index].title = trimmedTitle.isEmpty ? nil : trimmedTitle
 
         if let currentBatchID {
@@ -583,20 +578,17 @@ final class GenerateViewModel: ObservableObject {
     }
 
     func cancelRename() {
-        renamingItemID = nil
-        renamingTitle = ""
-        renamingOriginalTitle = ""
+        itemRename.cancel()
     }
 
     func finishRenameOnBlur() {
-        guard renamingItemID != nil else {
+        guard itemRename.isActive else {
             return
         }
-        let trimmedTitle = renamingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedTitle == renamingOriginalTitle.trimmingCharacters(in: .whitespacesAndNewlines) {
-            cancelRename()
-        } else {
+        if itemRename.shouldCommitOnBlur {
             commitRename()
+        } else {
+            cancelRename()
         }
     }
 
@@ -606,7 +598,7 @@ final class GenerateViewModel: ObservableObject {
             refreshSelectedRunLog()
             return
         }
-        selectedYAMLText = try? String(contentsOfFile: yamlPath, encoding: .utf8)
+        selectedYAMLText = try? String(contentsOf: URL(fileURLWithPath: yamlPath), encoding: .utf8)
         refreshSelectedRunLog()
     }
 
@@ -617,7 +609,7 @@ final class GenerateViewModel: ObservableObject {
         }
         let previewURL = URL(fileURLWithPath: previewPath)
         let ext = previewURL.pathExtension.isEmpty ? "png" : previewURL.pathExtension
-        exportLocalFile(at: previewURL, preferredName: "\(item.nodeId.replacingOccurrences(of: ":", with: "-"))-preview.\(ext)")
+        exportLocalFile(at: previewURL, preferredName: "\(BatchStore.pathSafe(item.nodeId))-preview.\(ext)")
     }
 
     func openSelectedPreviewImage() {
@@ -692,9 +684,7 @@ final class GenerateViewModel: ObservableObject {
         runLogsByItemID = persisted.summary.runLogsByItemID
         selectedRunLog = nil
         selectedRunLogText = ""
-        renamingItemID = nil
-        renamingTitle = ""
-        renamingOriginalTitle = ""
+        itemRename.cancel()
         isRestoringWorkspace = false
         loadSelectedYAML()
         persistDraftIfNeeded()
@@ -979,9 +969,7 @@ final class GenerateViewModel: ObservableObject {
         } else {
             batchDirectory = batchStore.rootDirectory.appendingPathComponent("__workspace__", isDirectory: true)
         }
-        return batchDirectory
-            .appendingPathComponent("items", isDirectory: true)
-            .appendingPathComponent("\(item.id.uuidString.lowercased())-\(item.nodeId.replacingOccurrences(of: ":", with: "-"))", isDirectory: true)
+        return BatchStore.itemDirectory(in: batchDirectory, item: item)
     }
 
     private var isTokenMissing: Bool {
@@ -1013,12 +1001,8 @@ final class ViewerViewModel: ObservableObject {
     @Published var selectedRunLogText: String = ""
     @Published var selectedSourceInputText: String?
     @Published var message: String = ""
-    @Published var renamingBatchID: String?
-    @Published var renamingBatchTitle: String = ""
-    @Published var renamingOriginalBatchTitle: String = ""
-    @Published var renamingItemID: UUID?
-    @Published var renamingTitle: String = ""
-    @Published var renamingOriginalTitle: String = ""
+    @Published var batchRename = RenameState<String>()
+    @Published var itemRename = RenameState<UUID>()
 
     private let batchStore: BatchStore
     private let continueEditing: (PersistedBatch) -> Void
@@ -1199,9 +1183,7 @@ final class ViewerViewModel: ObservableObject {
         guard batches.contains(where: { $0.summary.id == batchID }) else {
             return
         }
-        renamingBatchID = batchID
-        renamingBatchTitle = batchID
-        renamingOriginalBatchTitle = batchID
+        batchRename.begin(batchID, originalTitle: batchID)
     }
 
     func commitBatchRename() {
@@ -1210,7 +1192,7 @@ final class ViewerViewModel: ObservableObject {
             return
         }
 
-        let trimmedTitle = renamingBatchTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTitle = batchRename.trimmedTitle
         do {
             let oldBatchID = batch.summary.id
             let oldBatchDirectory = batch.batchDirectory
@@ -1230,20 +1212,17 @@ final class ViewerViewModel: ObservableObject {
     }
 
     func cancelBatchRename() {
-        renamingBatchID = nil
-        renamingBatchTitle = ""
-        renamingOriginalBatchTitle = ""
+        batchRename.cancel()
     }
 
     func finishBatchRenameOnBlur() {
-        guard renamingBatchID != nil else {
+        guard batchRename.isActive else {
             return
         }
-        let trimmedTitle = renamingBatchTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedTitle == renamingOriginalBatchTitle.trimmingCharacters(in: .whitespacesAndNewlines) {
-            cancelBatchRename()
-        } else {
+        if batchRename.shouldCommitOnBlur {
             commitBatchRename()
+        } else {
+            cancelBatchRename()
         }
     }
 
@@ -1258,10 +1237,7 @@ final class ViewerViewModel: ObservableObject {
         guard let item = selectedBatch?.summary.items.first(where: { $0.id == itemID }) else {
             return
         }
-        let originalTitle = item.title ?? item.nodeName ?? item.nodeId
-        renamingItemID = item.id
-        renamingTitle = originalTitle
-        renamingOriginalTitle = originalTitle
+        itemRename.begin(item.id, originalTitle: item.title ?? item.nodeName ?? item.nodeId)
     }
 
     func commitRename() {
@@ -1271,7 +1247,7 @@ final class ViewerViewModel: ObservableObject {
             return
         }
 
-        let trimmedTitle = renamingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTitle = itemRename.trimmedTitle
         var updatedItem = item
         updatedItem.title = trimmedTitle.isEmpty ? nil : trimmedTitle
 
@@ -1290,20 +1266,17 @@ final class ViewerViewModel: ObservableObject {
     }
 
     func cancelRename() {
-        renamingItemID = nil
-        renamingTitle = ""
-        renamingOriginalTitle = ""
+        itemRename.cancel()
     }
 
     func finishRenameOnBlur() {
-        guard renamingItemID != nil else {
+        guard itemRename.isActive else {
             return
         }
-        let trimmedTitle = renamingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedTitle == renamingOriginalTitle.trimmingCharacters(in: .whitespacesAndNewlines) {
-            cancelRename()
-        } else {
+        if itemRename.shouldCommitOnBlur {
             commitRename()
+        } else {
+            cancelRename()
         }
     }
 
@@ -1313,7 +1286,7 @@ final class ViewerViewModel: ObservableObject {
             loadSelectedRunLog()
             return
         }
-        selectedYAMLText = try? String(contentsOfFile: yamlPath, encoding: .utf8)
+        selectedYAMLText = try? String(contentsOf: URL(fileURLWithPath: yamlPath), encoding: .utf8)
         loadSelectedRunLog()
     }
 

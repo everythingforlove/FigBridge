@@ -155,8 +155,7 @@ public struct GenerationCoordinator: Sendable {
         }
         try Task.checkCancellation()
         let prompt = PromptBuilder.makeSinglePrompt(template: promptTemplate, item: item)
-        let itemDirectory = batchDirectory.appendingPathComponent("items/\(item.id.uuidString.lowercased())-\(item.nodeId.replacingOccurrences(of: ":", with: "-"))", isDirectory: true)
-        let yamlDirectory = itemDirectory.appendingPathComponent("yaml", isDirectory: true)
+        let yamlDirectory = BatchStore.itemDirectory(in: batchDirectory, item: item).appendingPathComponent("yaml", isDirectory: true)
         try FileManager.default.createDirectory(at: yamlDirectory, withIntermediateDirectories: true)
 
         do {
@@ -165,7 +164,7 @@ public struct GenerationCoordinator: Sendable {
                     await itemEvent(item.id, event)
                 }
             }
-            let yamlURL = yamlDirectory.appendingPathComponent("figma-node-\(item.nodeId.replacingOccurrences(of: ":", with: "-")).yaml")
+            let yamlURL = yamlDirectory.appendingPathComponent("figma-node-\(BatchStore.pathSafe(item.nodeId)).yaml")
             let rawOutputURL = yamlDirectory.appendingPathComponent("agent-output.txt")
             try result.output.write(to: rawOutputURL, atomically: true, encoding: .utf8)
             try result.output.write(to: yamlURL, atomically: true, encoding: .utf8)
@@ -238,11 +237,14 @@ public struct GenerationCoordinator: Sendable {
         } catch {
             var completed = 0
             for index in resolvedItems.indices {
-                resolvedItems[index].generationStatus = .failed
-                resolvedItems[index].generatedYAMLPath = nil
-                resolvedItems[index].agentOutputPath = nil
-                resolvedItems[index].errorMessage = error.localizedDescription
-                resolvedItems[index].logSummary = "执行失败"
+                finalizeBatchItem(
+                    &resolvedItems[index],
+                    status: .failed,
+                    errorMessage: error.localizedDescription,
+                    yamlPath: nil,
+                    agentOutputPath: nil,
+                    logSummary: "执行失败"
+                )
                 if let itemEvent {
                     await itemEvent(resolvedItems[index].id, .failed(message: error.localizedDescription))
                 }
@@ -260,11 +262,14 @@ public struct GenerationCoordinator: Sendable {
             let item = resolvedItems[index]
             let key = MultiYAMLOutputParser.ResultKey(fileKey: item.fileKey, nodeId: item.nodeId)
             guard let yamlText = outputMap[key], !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                resolvedItems[index].generationStatus = .failed
-                resolvedItems[index].generatedYAMLPath = nil
-                resolvedItems[index].agentOutputPath = rawOutputURL.path
-                resolvedItems[index].errorMessage = "agent 输出缺少该链接的 YAML 分段"
-                resolvedItems[index].logSummary = "执行失败"
+                finalizeBatchItem(
+                    &resolvedItems[index],
+                    status: .failed,
+                    errorMessage: "agent 输出缺少该链接的 YAML 分段",
+                    yamlPath: nil,
+                    agentOutputPath: rawOutputURL.path,
+                    logSummary: "执行失败"
+                )
                 completed += 1
                 if let progress {
                     await progress(completed, resolvedItems.count, resolvedItems[index])
@@ -272,17 +277,19 @@ public struct GenerationCoordinator: Sendable {
                 continue
             }
 
-            let itemDirectory = batchDirectory.appendingPathComponent("items/\(item.id.uuidString.lowercased())-\(item.nodeId.replacingOccurrences(of: ":", with: "-"))", isDirectory: true)
-            let yamlDirectory = itemDirectory.appendingPathComponent("yaml", isDirectory: true)
+            let yamlDirectory = BatchStore.itemDirectory(in: batchDirectory, item: item).appendingPathComponent("yaml", isDirectory: true)
             try FileManager.default.createDirectory(at: yamlDirectory, withIntermediateDirectories: true)
-            let yamlURL = yamlDirectory.appendingPathComponent("figma-node-\(item.nodeId.replacingOccurrences(of: ":", with: "-")).yaml")
+            let yamlURL = yamlDirectory.appendingPathComponent("figma-node-\(BatchStore.pathSafe(item.nodeId)).yaml")
             try yamlText.write(to: yamlURL, atomically: true, encoding: .utf8)
 
-            resolvedItems[index].generatedYAMLPath = yamlURL.path
-            resolvedItems[index].agentOutputPath = rawOutputURL.path
-            resolvedItems[index].generationStatus = .success
-            resolvedItems[index].errorMessage = nil
-            resolvedItems[index].logSummary = "\(provider.displayName) 已执行：\(result.executablePath)"
+            finalizeBatchItem(
+                &resolvedItems[index],
+                status: .success,
+                errorMessage: nil,
+                yamlPath: yamlURL.path,
+                agentOutputPath: rawOutputURL.path,
+                logSummary: "\(provider.displayName) 已执行：\(result.executablePath)"
+            )
 
             completed += 1
             if let progress {
@@ -293,10 +300,25 @@ public struct GenerationCoordinator: Sendable {
         return resolvedItems
     }
 
+    private func finalizeBatchItem(
+        _ item: inout FigmaLinkItem,
+        status: GenerationStatus,
+        errorMessage: String?,
+        yamlPath: String?,
+        agentOutputPath: String?,
+        logSummary: String
+    ) {
+        item.generationStatus = status
+        item.generatedYAMLPath = yamlPath
+        item.agentOutputPath = agentOutputPath
+        item.errorMessage = errorMessage
+        item.logSummary = logSummary
+    }
+
     private func makeBatchRawOutputURL(for item: FigmaLinkItem, batchDirectory: URL) -> URL {
-        let itemDirectory = batchDirectory.appendingPathComponent("items/\(item.id.uuidString.lowercased())-\(item.nodeId.replacingOccurrences(of: ":", with: "-"))", isDirectory: true)
-        let yamlDirectory = itemDirectory.appendingPathComponent("yaml", isDirectory: true)
-        return yamlDirectory.appendingPathComponent("agent-output.txt")
+        BatchStore.itemDirectory(in: batchDirectory, item: item)
+            .appendingPathComponent("yaml", isDirectory: true)
+            .appendingPathComponent("agent-output.txt")
     }
 }
 

@@ -166,7 +166,7 @@ public actor FigmaService {
             guard let remoteURL = resource.remoteURL else {
                 continue
             }
-            let filename = "\(index + 1)-\(resource.name.replacingOccurrences(of: ":", with: "-")).\(resource.format.rawValue)"
+            let filename = "\(index + 1)-\(BatchStore.pathSafe(resource.name)).\(resource.format.rawValue)"
             do {
                 let localURL = try await downloadFile(from: remoteURL, token: token, destinationDirectory: cacheDirectory, filename: filename)
                 var cached = resource

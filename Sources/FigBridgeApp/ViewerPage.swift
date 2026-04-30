@@ -45,13 +45,13 @@ struct ViewerPage: View {
                 List(selection: $viewModel.selectedBatchID) {
                     ForEach(viewModel.batches, id: \.summary.id) { batch in
                         VStack(alignment: .leading, spacing: 4) {
-                            if viewModel.renamingBatchID == batch.summary.id {
+                            if viewModel.batchRename.identifier == batch.summary.id {
                                 HStack(spacing: 8) {
-                                    TextField("", text: $viewModel.renamingBatchTitle)
+                                    TextField("", text: $viewModel.batchRename.title)
                                         .textFieldStyle(.roundedBorder)
                                         .focused($focusedRenamingBatchID, equals: batch.summary.id)
                                         .onChange(of: focusedRenamingBatchID) { newValue in
-                                            if viewModel.renamingBatchID == batch.summary.id, newValue != batch.summary.id {
+                                            if viewModel.batchRename.identifier == batch.summary.id, newValue != batch.summary.id {
                                                 viewModel.finishBatchRenameOnBlur()
                                             }
                                         }
@@ -98,11 +98,11 @@ struct ViewerPage: View {
                     }
                 }
                 .onSubmit {
-                    if viewModel.renamingBatchID != nil {
+                    if viewModel.batchRename.isActive {
                         viewModel.commitBatchRename()
                     }
                 }
-                .onChange(of: viewModel.renamingBatchID) { newValue in
+                .onChange(of: viewModel.batchRename.identifier) { newValue in
                     focusedRenamingBatchID = newValue
                 }
             }
@@ -129,13 +129,13 @@ struct ViewerPage: View {
                         .font(.headline)
                     List(batch.summary.items, selection: $viewModel.selectedItemID) { item in
                         HStack {
-                            if viewModel.renamingItemID == item.id {
+                            if viewModel.itemRename.identifier == item.id {
                                 HStack(spacing: 8) {
-                                    TextField("", text: $viewModel.renamingTitle)
+                                    TextField("", text: $viewModel.itemRename.title)
                                         .textFieldStyle(.roundedBorder)
                                         .focused($focusedRenamingItemID, equals: item.id)
                                         .onChange(of: focusedRenamingItemID) { newValue in
-                                            if viewModel.renamingItemID == item.id, newValue != item.id {
+                                            if viewModel.itemRename.identifier == item.id, newValue != item.id {
                                                 viewModel.finishRenameOnBlur()
                                             }
                                         }
@@ -162,11 +162,11 @@ struct ViewerPage: View {
                         }
                     }
                     .onSubmit {
-                        if viewModel.renamingItemID != nil {
+                        if viewModel.itemRename.isActive {
                             viewModel.commitRename()
                         }
                     }
-                    .onChange(of: viewModel.renamingItemID) { newValue in
+                    .onChange(of: viewModel.itemRename.identifier) { newValue in
                         focusedRenamingItemID = newValue
                     }
                     Button("Copy Prompt") {

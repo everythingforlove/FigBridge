@@ -163,11 +163,11 @@ struct GeneratePage: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .frame(minWidth: 320)
             .onSubmit {
-                if viewModel.renamingItemID != nil {
+                if viewModel.itemRename.isActive {
                     viewModel.commitRename()
                 }
             }
-            .onChange(of: viewModel.renamingItemID) { newValue in
+            .onChange(of: viewModel.itemRename.identifier) { newValue in
                 focusedRenamingItemID = newValue
             }
 
@@ -445,13 +445,13 @@ struct GeneratePage: View {
             List(items, selection: $viewModel.selectedItemID) { item in
                 HStack(alignment: .top, spacing: 8) {
                     VStack(alignment: .leading, spacing: 4) {
-                        if viewModel.renamingItemID == item.id {
+                        if viewModel.itemRename.identifier == item.id {
                             HStack(spacing: 8) {
-                                TextField("", text: $viewModel.renamingTitle)
+                                TextField("", text: $viewModel.itemRename.title)
                                     .textFieldStyle(.roundedBorder)
                                     .focused($focusedRenamingItemID, equals: item.id)
                                     .onChange(of: focusedRenamingItemID) { newValue in
-                                        if viewModel.renamingItemID == item.id, newValue != item.id {
+                                        if viewModel.itemRename.identifier == item.id, newValue != item.id {
                                             viewModel.finishRenameOnBlur()
                                         }
                                     }
