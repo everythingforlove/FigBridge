@@ -378,7 +378,8 @@ struct GenerateViewModelTests {
         harness.viewModel.selectedItemID = generatedItem.id
         await harness.viewModel.loadSelectedItemPreviewIfNeeded()
 
-        #expect(harness.viewModel.selectedYAMLText == "name: 1:2")
+        #expect(harness.viewModel.selectedYAMLText?.contains(#""nodeId""#) == true)
+        #expect(harness.viewModel.selectedYAMLText?.contains(#""1:2""#) == true)
 
         harness.viewModel.beginRenamingSelectedItem()
         harness.viewModel.itemRename.title = "Renamed"
@@ -1008,12 +1009,12 @@ private actor RecordingAgentRunner: AgentRunning {
         if prompt.contains("Links to process:") {
             return AgentRunResult(
                 output: """
-                <<<FIGBRIDGE_YAML_START fileKey=FILE1 nodeId=1:2>>>
-                name: 1:2
-                <<<FIGBRIDGE_YAML_END>>>
-                <<<FIGBRIDGE_YAML_START fileKey=FILE2 nodeId=3:4>>>
-                name: 3:4
-                <<<FIGBRIDGE_YAML_END>>>
+                <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE1 nodeId=1:2>>>
+                \(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "Node 1"))
+                <<<FIGBRIDGE_DESIGN_IR_END>>>
+                <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE2 nodeId=3:4>>>
+                \(makeAgentDesignIRJSON(fileKey: "FILE2", nodeId: "3:4", screenName: "Node 2"))
+                <<<FIGBRIDGE_DESIGN_IR_END>>>
                 """,
                 executablePath: "/mock/\(provider.rawValue)",
                 arguments: [],
@@ -1021,7 +1022,13 @@ private actor RecordingAgentRunner: AgentRunning {
                 stderr: ""
             )
         }
-        return AgentRunResult(output: "name: \(item.nodeId)", executablePath: "/mock/\(provider.rawValue)", arguments: [], exitCode: 0, stderr: "")
+        return AgentRunResult(
+            output: makeAgentDesignIRJSON(fileKey: item.fileKey, nodeId: item.nodeId, screenName: "Node \(item.nodeId)"),
+            executablePath: "/mock/\(provider.rawValue)",
+            arguments: [],
+            exitCode: 0,
+            stderr: ""
+        )
     }
 
     func recordedCalls() -> [String] {
@@ -1055,7 +1062,13 @@ private actor StreamingRecordingAgentRunner: AgentRunning {
                 await eventHandler(.stderr("stderr-line\n"))
                 await eventHandler(.finished(exitCode: 0))
             }
-            return AgentRunResult(output: "name: \(item.nodeId)", executablePath: "/mock/\(provider.rawValue)", arguments: [], exitCode: 0, stderr: "stderr-line")
+            return AgentRunResult(
+                output: makeAgentDesignIRJSON(fileKey: item.fileKey, nodeId: item.nodeId, screenName: "Node \(item.nodeId)"),
+                executablePath: "/mock/\(provider.rawValue)",
+                arguments: [],
+                exitCode: 0,
+                stderr: "stderr-line"
+            )
         case .batch:
             if let eventHandler {
                 await eventHandler(.started(executablePath: "/mock/\(provider.rawValue)", arguments: [], isSharedLog: true))
@@ -1064,12 +1077,12 @@ private actor StreamingRecordingAgentRunner: AgentRunning {
             }
             return AgentRunResult(
                 output: """
-                <<<FIGBRIDGE_YAML_START fileKey=FILE1 nodeId=1:2>>>
-                name: 1:2
-                <<<FIGBRIDGE_YAML_END>>>
-                <<<FIGBRIDGE_YAML_START fileKey=FILE2 nodeId=3:4>>>
-                name: 3:4
-                <<<FIGBRIDGE_YAML_END>>>
+                <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE1 nodeId=1:2>>>
+                \(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "Node 1"))
+                <<<FIGBRIDGE_DESIGN_IR_END>>>
+                <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE2 nodeId=3:4>>>
+                \(makeAgentDesignIRJSON(fileKey: "FILE2", nodeId: "3:4", screenName: "Node 2"))
+                <<<FIGBRIDGE_DESIGN_IR_END>>>
                 """,
                 executablePath: "/mock/\(provider.rawValue)",
                 arguments: [],
@@ -1088,7 +1101,13 @@ private actor SlowIgnoringCancellationRunner: AgentRunning {
         eventHandler: (@Sendable (AgentRunEvent) async -> Void)?
     ) async throws -> AgentRunResult {
         try? await Task.sleep(nanoseconds: 300_000_000)
-        return AgentRunResult(output: "name: \(item.nodeId)", executablePath: "/mock/\(provider.rawValue)", arguments: [], exitCode: 0, stderr: "")
+        return AgentRunResult(
+            output: makeAgentDesignIRJSON(fileKey: item.fileKey, nodeId: item.nodeId, screenName: "Node \(item.nodeId)"),
+            executablePath: "/mock/\(provider.rawValue)",
+            arguments: [],
+            exitCode: 0,
+            stderr: ""
+        )
     }
 }
 

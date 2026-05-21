@@ -24,10 +24,12 @@ final class AppContainer: ObservableObject {
         let baseDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("FigBridge", isDirectory: true) ?? FileManager.default.temporaryDirectory.appendingPathComponent("FigBridge", isDirectory: true)
         let batchesDirectory = baseDirectory.appendingPathComponent("Batches", isDirectory: true)
+        let designPackagesDirectory = baseDirectory.appendingPathComponent("DesignPackages", isDirectory: true)
         let settingsURL = baseDirectory.appendingPathComponent("settings.json")
         let draftURL = baseDirectory.appendingPathComponent("generate-workspace-draft.json")
         let settingsStore = SettingsStore(fileURL: settingsURL)
         let batchStore = BatchStore(rootDirectory: batchesDirectory)
+        let designPackageStore = DesignPackageStore(rootDirectory: designPackagesDirectory)
         let agentService = AgentService()
         let figmaService = FigmaService(baseDirectory: baseDirectory)
         let generationCoordinator = GenerationCoordinator(batchStore: batchStore, agentRunner: agentService)
@@ -44,6 +46,7 @@ final class AppContainer: ObservableObject {
         )
         let viewerViewModel = ViewerViewModel(
             batchStore: batchStore,
+            designPackageStore: designPackageStore,
             continueEditing: { batch in
                 tabSelectionCoordinator.onEditBatch?(batch)
             },

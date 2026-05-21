@@ -463,6 +463,74 @@ struct ViewerViewModelTests {
         #expect(message.contains("1 个图片资源缺失"))
     }
 
+    @Test func importDesignPackageDirectoryLoadsPreviewTreeAndIssues() throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let viewModel = ViewerViewModel(
+            batchStore: BatchStore(rootDirectory: sandbox.root.appendingPathComponent("batches", isDirectory: true)),
+            designPackageStore: DesignPackageStore(rootDirectory: sandbox.root.appendingPathComponent("packages", isDirectory: true))
+        )
+
+        viewModel.importDesignPackageDirectory(from: fixturePackageURL(named: "login-basic"))
+
+        #expect(viewModel.importedDesignPackage?.manifest.packageID == "login-basic")
+        #expect(viewModel.importedDesignPackagePreviewURL?.lastPathComponent == "preview.png")
+        #expect(viewModel.designTreeItems.first?.title == "Login")
+        #expect(viewModel.designTreeItems.first?.children?.count == 2)
+        #expect(viewModel.designIssues.isEmpty)
+        #expect(viewModel.harmonyPageName == "Login")
+    }
+
+    @Test func importDesignPackageCollectsWarningsAndNeedsReview() throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let sourceStore = DesignPackageStore(rootDirectory: sandbox.root.appendingPathComponent("source-packages", isDirectory: true))
+        let persisted = try sourceStore.createPackage(
+            DesignPackageWriteRequest(
+                packageID: "review-package",
+                source: DesignPackageSource(figmaURL: "https://www.figma.com/design/FILE123/App?node-id=1-2", fileKey: "FILE123", nodeId: "1:2"),
+                design: makeReviewDesignIR()
+            )
+        )
+        let viewModel = ViewerViewModel(
+            batchStore: BatchStore(rootDirectory: sandbox.root.appendingPathComponent("batches", isDirectory: true)),
+            designPackageStore: DesignPackageStore(rootDirectory: sandbox.root.appendingPathComponent("packages", isDirectory: true))
+        )
+
+        viewModel.importDesignPackageDirectory(from: persisted.packageDirectory)
+
+        #expect(viewModel.designIssues.contains { $0.severity == .needsReview && $0.nodePath.contains("Hero") })
+        #expect(viewModel.designIssues.contains { $0.severity == .warning && $0.message == "布局需确认" })
+    }
+
+    @Test func generateHarmonyProjectFromImportedDesignPackageWritesFilesAndReport() throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let viewModel = ViewerViewModel(
+            batchStore: BatchStore(rootDirectory: sandbox.root.appendingPathComponent("batches", isDirectory: true)),
+            designPackageStore: DesignPackageStore(rootDirectory: sandbox.root.appendingPathComponent("packages", isDirectory: true))
+        )
+        let targetProject = sandbox.root.appendingPathComponent("HarmonyProject", isDirectory: true)
+
+        viewModel.importDesignPackageDirectory(from: fixturePackageURL(named: "login-basic"))
+        viewModel.harmonyProjectPath = targetProject.path
+        viewModel.generateHarmonyProject()
+
+        let pageURL = targetProject.appendingPathComponent("entry/src/main/ets/pages/Login.ets")
+        let resourceURL = targetProject.appendingPathComponent("entry/src/main/resources/base/media/hero.png")
+        let reportURL = targetProject.appendingPathComponent("figbridge-harmony-report.md")
+
+        #expect(FileManager.default.fileExists(atPath: pageURL.path))
+        #expect(FileManager.default.fileExists(atPath: resourceURL.path))
+        #expect(FileManager.default.fileExists(atPath: reportURL.path))
+        #expect(viewModel.harmonyReportText.contains("资源映射"))
+        #expect(viewModel.harmonyReportText.contains("页面文件存在"))
+        #expect(viewModel.message.contains("Harmony 生成完成"))
+    }
+
     private func makePersistedBatch(
         store: BatchStore,
         id: String,
@@ -543,5 +611,38 @@ struct ViewerViewModelTests {
         )
         item.generatedYAMLPath = yamlText
         return item
+    }
+
+    private func fixturePackageURL(named name: String) -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/DesignPackages/\(name)", isDirectory: true)
+    }
+
+    private func makeReviewDesignIR() -> DesignIR {
+        let hero = DesignNode(
+            id: "2:1",
+            name: "Hero",
+            type: .frame,
+            bounds: DesignRect(x: 0, y: 0, width: 320, height: 160),
+            children: [],
+            needsReview: true,
+            warnings: ["布局需确认"]
+        )
+        let root = DesignNode(
+            id: "1:2",
+            name: "Login",
+            type: .frame,
+            bounds: DesignRect(x: 0, y: 0, width: 360, height: 640),
+            layout: DesignLayout(mode: .vertical),
+            children: [hero]
+        )
+        return DesignIR(
+            screenName: "Review Login",
+            fileKey: "FILE123",
+            nodeId: "1:2",
+            viewport: DesignSize(width: 360, height: 640),
+            rootNode: root
+        )
     }
 }

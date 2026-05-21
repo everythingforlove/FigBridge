@@ -60,10 +60,10 @@ public struct ShellClient: Sendable {
                 task.arguments = arguments
                 task.environment = runtimeEnvironment()
 
-                let stdinHandle = FileHandle(forReadingAtPath: "/dev/null")
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
-                task.standardInput = stdinHandle
+                let stdinFile = FileHandle(forReadingAtPath: "/dev/null")
+                task.standardInput = stdinFile
                 task.standardOutput = stdoutPipe
                 task.standardError = stderrPipe
                 let stdoutCollector = StreamCollector()
@@ -94,42 +94,43 @@ public struct ShellClient: Sendable {
                     }
                 }
 
+                task.terminationHandler = { process in
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    try? stdinFile?.close()
+                    let stdoutTail = stdoutPipe.fileHandleForReading.availableData
+                    let stderrTail = stderrPipe.fileHandleForReading.availableData
+                    stdoutCollector.append(data: stdoutTail)
+                    stderrCollector.append(data: stderrTail)
+                    if let text = String(data: stdoutTail, encoding: .utf8), !text.isEmpty, let onEvent {
+                        Task {
+                            await onEvent(.stdout(text))
+                        }
+                    }
+                    if let text = String(data: stderrTail, encoding: .utf8), !text.isEmpty, let onEvent {
+                        Task {
+                            await onEvent(.stderr(text))
+                        }
+                    }
+                    if let onEvent {
+                        Task {
+                            await onEvent(.finished(status: process.terminationStatus))
+                        }
+                    }
+                    resumeBox.resume {
+                        if cancellationState.isCancelled {
+                            continuation.resume(throwing: CancellationError())
+                        } else {
+                            continuation.resume(returning: ShellResult(status: process.terminationStatus, stdout: stdoutCollector.fullText(), stderr: stderrCollector.fullText()))
+                        }
+                    }
+                }
+
                 do {
                     try task.run()
                     if let onEvent {
                         Task {
                             await onEvent(.started(pid: task.processIdentifier))
-                        }
-                    }
-                    task.terminationHandler = { process in
-                        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                        stderrPipe.fileHandleForReading.readabilityHandler = nil
-                        try? stdinHandle?.close()
-                        let stdoutTail = stdoutPipe.fileHandleForReading.availableData
-                        let stderrTail = stderrPipe.fileHandleForReading.availableData
-                        stdoutCollector.append(data: stdoutTail)
-                        stderrCollector.append(data: stderrTail)
-                        if let text = String(data: stdoutTail, encoding: .utf8), !text.isEmpty, let onEvent {
-                            Task {
-                                await onEvent(.stdout(text))
-                            }
-                        }
-                        if let text = String(data: stderrTail, encoding: .utf8), !text.isEmpty, let onEvent {
-                            Task {
-                                await onEvent(.stderr(text))
-                            }
-                        }
-                        if let onEvent {
-                            Task {
-                                await onEvent(.finished(status: process.terminationStatus))
-                            }
-                        }
-                        resumeBox.resume {
-                            if cancellationState.isCancelled {
-                                continuation.resume(throwing: CancellationError())
-                            } else {
-                                continuation.resume(returning: ShellResult(status: process.terminationStatus, stdout: stdoutCollector.fullText(), stderr: stderrCollector.fullText()))
-                            }
                         }
                     }
                     if let timeout, timeout > 0 {

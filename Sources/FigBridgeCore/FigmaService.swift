@@ -129,7 +129,8 @@ public actor FigmaService {
         return FigmaNodePayload(
             name: node.name,
             previewURL: previewResponse.images[nodeId] ?? nil,
-            resources: resources
+            resources: resources,
+            document: node
         )
     }
 
@@ -253,33 +254,6 @@ private struct NodeResponse: Decodable {
 
 private struct NodeContainer: Decodable {
     let document: FigmaDocumentNode
-}
-
-private struct FigmaDocumentNode: Decodable {
-    let id: String
-    let name: String
-    let fills: [FigmaFill]
-    let children: [FigmaDocumentNode]
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
-        fills = try container.decodeIfPresent([FigmaFill].self, forKey: .fills) ?? []
-        children = try container.decodeIfPresent([FigmaDocumentNode].self, forKey: .children) ?? []
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case name
-        case fills
-        case children
-    }
-}
-
-private struct FigmaFill: Decodable {
-    let type: String
-    let imageRef: String?
 }
 
 private struct PreviewResponse: Decodable {

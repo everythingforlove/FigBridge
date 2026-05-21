@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import FigBridgeCore
 
+
 struct AgentServiceTests {
     @Test func detectsAvailableAgentsAndReadsVersion() async throws {
         let fileManager = FileManager.default
@@ -117,6 +118,52 @@ struct AgentServiceTests {
         #expect(output == "hello with node")
     }
 
+    @Test func runsOpenAICompatibleHTTPProviderWithMockTransport() async throws {
+        let transport = MockAgentHTTPTransport(responseBody: """
+        {
+          "choices": [
+            {
+              "message": {
+                "role": "assistant",
+                "content": "\(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2").replacingOccurrences(of: "\n", with: "\\n").replacingOccurrences(of: "\"", with: "\\\""))"
+              }
+            }
+          ]
+        }
+        """)
+        let provider = AgentProvider(
+            id: "mock-http",
+            kind: .openAICompatibleHTTP,
+            displayNameOverride: "Mock HTTP",
+            openAICompatibleHTTP: OpenAICompatibleHTTPProviderConfig(
+                baseURL: "https://mock.example/v1",
+                apiKey: "test-key",
+                model: "mock-model",
+                timeout: 42,
+                streaming: false
+            )
+        )
+        let service = AgentService(httpTransport: transport)
+        let recorder = AgentRunEventRecorder()
+
+        let output = try await service.runDetailed(provider: provider, prompt: "hello http") { event in
+            await recorder.append(event)
+        }
+
+        let request = try #require(transport.recordedRequest)
+        let body = String(data: request.httpBody ?? Data(), encoding: .utf8) ?? ""
+        let events = await recorder.events()
+        #expect(request.url?.absoluteString == "https://mock.example/v1/chat/completions")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        #expect(body.contains("\"model\":\"mock-model\""))
+        #expect(body.contains("hello http"))
+        #expect(output.providerKind == .openAICompatibleHTTP)
+        #expect(output.model == "mock-model")
+        #expect(output.requestSummary.contains("promptChars=10"))
+        #expect(events.contains { if case .metadata(.openAICompatibleHTTP, "mock-model", let summary) = $0 { return summary.contains("mock-model") } else { return false } })
+        #expect(output.output.contains("\"fileKey\": \"FILE1\""))
+    }
+
     @Test func streamsShellOutputEventsBeforeCompletion() async throws {
         let sandbox = try TestSandbox()
         defer { sandbox.cleanup() }
@@ -208,6 +255,42 @@ struct AgentServiceTests {
         #expect(result.status == 0)
         #expect(result.stdout.contains("done"))
         #expect(elapsed < timeout)
+    }
+}
+
+private actor AgentRunEventRecorder {
+    private var values: [AgentRunEvent] = []
+
+    func append(_ event: AgentRunEvent) {
+        values.append(event)
+    }
+
+    func events() -> [AgentRunEvent] {
+        values
+    }
+}
+
+private final class MockAgentHTTPTransport: AgentHTTPTransport, @unchecked Sendable {
+    private let responseBody: String
+    private(set) var recordedRequest: URLRequest?
+
+    init(responseBody: String) {
+        self.responseBody = responseBody
+    }
+
+    func data(for request: URLRequest, timeout: TimeInterval) async throws -> (Data, HTTPURLResponse) {
+        recordedRequest = request
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        return (Data(responseBody.utf8), response)
+    }
+
+    func bytes(for request: URLRequest, timeout: TimeInterval) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        fatalError("Streaming is not used by this mock")
     }
 }
 

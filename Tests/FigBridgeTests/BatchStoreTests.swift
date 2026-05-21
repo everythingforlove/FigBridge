@@ -120,7 +120,7 @@ struct BatchStoreTests {
         item.generatedYAMLPath = "/tmp/a.yaml"
         let prompt = store.makeCopyPrompt(for: [item])
 
-        #expect(prompt.contains("Implement this design from yaml files."))
+        #expect(prompt.contains("Implement this design from DesignIR files."))
         #expect(prompt.contains("BASE: /tmp"))
         #expect(prompt.contains("- 首页：a.yaml"))
     }

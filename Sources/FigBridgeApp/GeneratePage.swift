@@ -230,7 +230,7 @@ struct GeneratePage: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Picker("", selection: $expandedSection) {
                             Text("运行日志").tag(DetailSection.runLog)
-                            Text("YAML").tag(DetailSection.yaml)
+                            Text("DesignIR").tag(DetailSection.yaml)
                         }
                         .pickerStyle(.segmented)
                         Group {
@@ -246,6 +246,24 @@ struct GeneratePage: View {
                                             VStack(alignment: .leading, spacing: 4) {
                                                 Text("状态: \(runLog.status.rawValue)")
                                                     .font(.caption)
+                                                Text("Provider: \(runLog.providerKind.rawValue)")
+                                                    .font(.caption2)
+                                                if let model = runLog.model, !model.isEmpty {
+                                                    Text("Model: \(model)")
+                                                        .font(.caption2)
+                                                        .textSelection(.enabled)
+                                                }
+                                                if let requestSummary = runLog.requestSummary, !requestSummary.isEmpty {
+                                                    Text("请求: \(requestSummary)")
+                                                        .font(.caption2)
+                                                        .textSelection(.enabled)
+                                                }
+                                                if let errorMessage = runLog.errorMessage, !errorMessage.isEmpty {
+                                                    Text("错误: \(errorMessage)")
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.red)
+                                                        .textSelection(.enabled)
+                                                }
                                                 if let executablePath = runLog.executablePath {
                                                     Text("执行文件: \(executablePath)")
                                                         .font(.caption2)
@@ -297,7 +315,7 @@ struct GeneratePage: View {
                                         }
                                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                                     } else {
-                                        Text("未找到 YAML")
+                                        Text("未找到 DesignIR")
                                             .foregroundStyle(.secondary)
                                     }
                                 }
@@ -413,8 +431,8 @@ struct GeneratePage: View {
             运行链路：
             1) 在工作台输入多行信息并添加，应用会解析 Figma design 链接并按 fileKey + nodeId 去重。
             2) 选中条目时拉取节点预览与资源元数据。
-            3) 点击“生成”后由协调器按当前模式和策略调用 Agent 生成 YAML。
-            4) 结果写入当前批次目录（含批次元数据、YAML 与相关导出内容），可在“查看”页继续管理。
+            3) 点击“生成”后由协调器按当前模式和策略调用 Agent 生成 DesignIR。
+            4) 结果写入当前批次目录（含批次元数据、DesignIR 与相关导出内容），可在“查看”页继续管理。
             """
         case .modeAndStrategy:
             """
@@ -481,7 +499,7 @@ struct GeneratePage: View {
                             }
                         }
                         if showsGeneratedState {
-                            Text("YAML 已生成")
+                            Text("DesignIR 已生成")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }

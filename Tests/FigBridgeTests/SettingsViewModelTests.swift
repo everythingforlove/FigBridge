@@ -72,6 +72,46 @@ struct SettingsViewModelTests {
         #expect(viewModel.message.isEmpty)
     }
 
+    @Test func configuredHTTPProviderIsAvailableWithoutCLIDetection() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+        let provider = AgentProvider(
+            id: "internal-http",
+            kind: .openAICompatibleHTTP,
+            displayNameOverride: "Internal HTTP",
+            openAICompatibleHTTP: OpenAICompatibleHTTPProviderConfig(
+                baseURL: "https://internal.example/v1",
+                apiKey: "key",
+                model: "internal-model",
+                timeout: 120,
+                streaming: false
+            )
+        )
+        let settingsStore = SettingsStore(fileURL: sandbox.root.appendingPathComponent("settings.json"))
+        try settingsStore.save(AppSettings(
+            selectedAgentID: provider.id,
+            providerConfigurations: [.claude, .codex, provider],
+            promptTemplate: "prompt",
+            outputDirectoryPath: nil,
+            figmaToken: "",
+            defaultExportFormat: .png,
+            defaultGenerationMode: .sequential,
+            parallelism: 2,
+            defaultAgentCallStrategy: .singlePerLink
+        ))
+        let viewModel = SettingsViewModel(
+            settingsStore: settingsStore,
+            agentService: AgentService(shellClient: ShellClient(pathLookupDirectories: [], environment: ["PATH": "/usr/bin:/bin"])),
+            figmaService: FigmaService(baseDirectory: sandbox.root, transport: MockFigmaTransport(responses: []))
+        )
+
+        await viewModel.bootstrap()
+
+        #expect(viewModel.availableAgents.map(\.provider).contains(provider))
+        #expect(viewModel.settings.selectedAgentID == provider.id)
+        #expect(viewModel.provider(for: provider.id) == provider)
+    }
+
     @Test func testTokenReportsSuccessMessage() async throws {
         let sandbox = try TestSandbox()
         defer { sandbox.cleanup() }

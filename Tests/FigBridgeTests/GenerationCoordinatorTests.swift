@@ -9,8 +9,8 @@ struct GenerationCoordinatorTests {
 
         let batchStore = BatchStore(rootDirectory: sandbox.root)
         let runner = MockAgentRunner(outputs: [
-            "FILE1|1:2": .success("name: first"),
-            "FILE2|3:4": .success("name: second"),
+            "FILE1|1:2": .success(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "first")),
+            "FILE2|3:4": .success(makeAgentDesignIRJSON(fileKey: "FILE2", nodeId: "3:4", screenName: "second")),
         ])
         let coordinator = GenerationCoordinator(batchStore: batchStore, agentRunner: runner)
 
@@ -40,7 +40,7 @@ struct GenerationCoordinatorTests {
 
         let batchStore = BatchStore(rootDirectory: sandbox.root)
         let runner = MockAgentRunner(outputs: [
-            "FILE1|1:2": .success("name: first"),
+            "FILE1|1:2": .success(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "first")),
             "FILE2|3:4": .failure(MockFailure()),
         ])
         let coordinator = GenerationCoordinator(batchStore: batchStore, agentRunner: runner)
@@ -71,8 +71,8 @@ struct GenerationCoordinatorTests {
 
         let batchStore = BatchStore(rootDirectory: sandbox.root)
         let runner = MockAgentRunner(outputs: [
-            "FILE1|1:2": .success("name: first"),
-            "FILE2|3:4": .success("name: second"),
+            "FILE1|1:2": .success(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "first")),
+            "FILE2|3:4": .success(makeAgentDesignIRJSON(fileKey: "FILE2", nodeId: "3:4", screenName: "second")),
         ])
         let coordinator = GenerationCoordinator(batchStore: batchStore, agentRunner: runner)
 
@@ -153,12 +153,12 @@ struct GenerationCoordinatorTests {
 
         let batchStore = BatchStore(rootDirectory: sandbox.root)
         let runner = MockBatchAgentRunner(output: """
-        <<<FIGBRIDGE_YAML_START fileKey=FILE1 nodeId=1:2>>>
-        name: first
-        <<<FIGBRIDGE_YAML_END>>>
-        <<<FIGBRIDGE_YAML_START fileKey=FILE2 nodeId=3:4>>>
-        name: second
-        <<<FIGBRIDGE_YAML_END>>>
+        <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE1 nodeId=1:2>>>
+        \(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "first"))
+        <<<FIGBRIDGE_DESIGN_IR_END>>>
+        <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE2 nodeId=3:4>>>
+        \(makeAgentDesignIRJSON(fileKey: "FILE2", nodeId: "3:4", screenName: "second"))
+        <<<FIGBRIDGE_DESIGN_IR_END>>>
         """)
         let coordinator = GenerationCoordinator(batchStore: batchStore, agentRunner: runner)
         let items = [
@@ -189,9 +189,9 @@ struct GenerationCoordinatorTests {
 
         let batchStore = BatchStore(rootDirectory: sandbox.root)
         let runner = MockBatchAgentRunner(output: """
-        <<<FIGBRIDGE_YAML_START fileKey=FILE1 nodeId=1:2>>>
-        name: first
-        <<<FIGBRIDGE_YAML_END>>>
+        <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE1 nodeId=1:2>>>
+        \(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "first"))
+        <<<FIGBRIDGE_DESIGN_IR_END>>>
         """)
         let coordinator = GenerationCoordinator(batchStore: batchStore, agentRunner: runner)
         let items = [
@@ -215,6 +215,91 @@ struct GenerationCoordinatorTests {
         #expect(successCount == 1)
         #expect(failedCount == 1)
         #expect(batch.summary.items.first(where: { $0.fileKey == "FILE2" })?.errorMessage?.contains("缺少") == true)
+    }
+
+    @Test func rejectsInvalidSingleItemAgentOutputsAndKeepsRawOutput() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let batchStore = BatchStore(rootDirectory: sandbox.root)
+        let runner = MockAgentRunner(outputs: [
+            "FILE1|1:2": .success(#"{"version":"design-ir/v1"}"#),
+            "FILE2|3:4": .success("""
+            ```json
+            \(makeAgentDesignIRJSON(fileKey: "FILE2", nodeId: "3:4"))
+            ```
+            """),
+            "FILE3|5:6": .success("not design ir"),
+        ])
+        let coordinator = GenerationCoordinator(batchStore: batchStore, agentRunner: runner)
+        let items = [
+            FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2"),
+            FigmaLinkItem(rawInputLine: "two", title: "two", url: "https://www.figma.com/design/FILE2/B?node-id=3-4", fileKey: "FILE2", nodeId: "3:4"),
+            FigmaLinkItem(rawInputLine: "three", title: "three", url: "https://www.figma.com/design/FILE3/C?node-id=5-6", fileKey: "FILE3", nodeId: "5:6"),
+        ]
+
+        let batch = try await coordinator.generate(
+            agent: .codex,
+            promptTemplate: "prompt",
+            sourceInputText: "input",
+            outputDirectory: sandbox.root,
+            mode: .sequential,
+            parallelism: 1,
+            callStrategy: .singlePerLink,
+            items: items
+        )
+
+        #expect(batch.summary.items.allSatisfy { $0.generationStatus == .failed })
+        #expect(batch.summary.items.allSatisfy { $0.generatedYAMLPath == nil })
+        #expect(batch.summary.items.allSatisfy { $0.agentOutputPath != nil })
+        #expect(batch.summary.items[0].errorMessage?.contains("缺少字段") == true)
+        #expect(batch.summary.items[1].errorMessage?.contains("Markdown") == true)
+        #expect(batch.summary.items[2].errorMessage?.contains("不是有效") == true)
+    }
+
+    @Test func recordsPerItemSuccessAndFailureReasonsForSingleBatchCall() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let batchStore = BatchStore(rootDirectory: sandbox.root)
+        let runner = MockBatchAgentRunner(output: """
+        <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE1 nodeId=1:2>>>
+        \(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "valid"))
+        <<<FIGBRIDGE_DESIGN_IR_END>>>
+        <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE2 nodeId=3:4>>>
+        ```json
+        \(makeAgentDesignIRJSON(fileKey: "FILE2", nodeId: "3:4", screenName: "markdown"))
+        ```
+        <<<FIGBRIDGE_DESIGN_IR_END>>>
+        <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE3 nodeId=5:6>>>
+        {"version":"design-ir/v1"}
+        <<<FIGBRIDGE_DESIGN_IR_END>>>
+        """)
+        let coordinator = GenerationCoordinator(batchStore: batchStore, agentRunner: runner)
+        let items = [
+            FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2"),
+            FigmaLinkItem(rawInputLine: "two", title: "two", url: "https://www.figma.com/design/FILE2/B?node-id=3-4", fileKey: "FILE2", nodeId: "3:4"),
+            FigmaLinkItem(rawInputLine: "three", title: "three", url: "https://www.figma.com/design/FILE3/C?node-id=5-6", fileKey: "FILE3", nodeId: "5:6"),
+        ]
+
+        let batch = try await coordinator.generate(
+            agent: .codex,
+            promptTemplate: "prompt",
+            sourceInputText: "input",
+            outputDirectory: sandbox.root,
+            mode: .sequential,
+            parallelism: 1,
+            callStrategy: .singleForBatch,
+            items: items
+        )
+
+        #expect(batch.summary.items[0].generationStatus == .success)
+        #expect(batch.summary.items[0].generatedYAMLPath != nil)
+        #expect(batch.summary.items[1].generationStatus == .failed)
+        #expect(batch.summary.items[1].errorMessage?.contains("Markdown") == true)
+        #expect(batch.summary.items[2].generationStatus == .failed)
+        #expect(batch.summary.items[2].errorMessage?.contains("缺少字段") == true)
+        #expect(batch.summary.items.allSatisfy { $0.agentOutputPath != nil })
     }
 
     @Test func emitsStreamingEventsForSingleItemRuns() async throws {
@@ -319,7 +404,7 @@ private actor RetryingMockAgentRunner: AgentRunning {
         if nextAttempt == 1 {
             throw MockFailure()
         }
-        return AgentRunResult(output: "name: retried", executablePath: "/mock/\(provider.rawValue)", arguments: [], exitCode: 0, stderr: "")
+        return AgentRunResult(output: makeAgentDesignIRJSON(fileKey: item.fileKey, nodeId: item.nodeId, screenName: "retried"), executablePath: "/mock/\(provider.rawValue)", arguments: [], exitCode: 0, stderr: "")
     }
 
     func recordedCalls() -> [String] {
@@ -383,7 +468,7 @@ private actor EventMockAgentRunner: AgentRunning {
                 await eventHandler(.stderr("warn-1\n"))
                 await eventHandler(.finished(exitCode: 0))
             }
-            return AgentRunResult(output: "name: first", executablePath: "/mock/\(provider.rawValue)", arguments: [], exitCode: 0, stderr: "warn-1")
+            return AgentRunResult(output: makeAgentDesignIRJSON(fileKey: item.fileKey, nodeId: item.nodeId, screenName: "first"), executablePath: "/mock/\(provider.rawValue)", arguments: [], exitCode: 0, stderr: "warn-1")
         case .batch:
             if let eventHandler {
                 await eventHandler(.started(executablePath: "/mock/\(provider.rawValue)", arguments: [], isSharedLog: true))
@@ -392,12 +477,12 @@ private actor EventMockAgentRunner: AgentRunning {
             }
             return AgentRunResult(
                 output: """
-                <<<FIGBRIDGE_YAML_START fileKey=FILE1 nodeId=1:2>>>
-                name: first
-                <<<FIGBRIDGE_YAML_END>>>
-                <<<FIGBRIDGE_YAML_START fileKey=FILE2 nodeId=3:4>>>
-                name: second
-                <<<FIGBRIDGE_YAML_END>>>
+                <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE1 nodeId=1:2>>>
+                \(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "first"))
+                <<<FIGBRIDGE_DESIGN_IR_END>>>
+                <<<FIGBRIDGE_DESIGN_IR_START fileKey=FILE2 nodeId=3:4>>>
+                \(makeAgentDesignIRJSON(fileKey: "FILE2", nodeId: "3:4", screenName: "second"))
+                <<<FIGBRIDGE_DESIGN_IR_END>>>
                 """,
                 executablePath: "/mock/\(provider.rawValue)",
                 arguments: [],

@@ -6,9 +6,12 @@ struct SettingsStoreTests {
     @Test func defaultPromptIncludesFigmaMCPStopRules() {
         let prompt = AppSettings.defaultPrompt.lowercased()
 
+        #expect(prompt.contains("designir"))
+        #expect(prompt.contains("json or yaml"))
         #expect(prompt.contains("figma mcp"))
         #expect(prompt.contains("stop immediately"))
         #expect(prompt.contains("do not use fallback"))
+        #expect(prompt.contains("do not include markdown"))
     }
 
     @Test func persistsAndLoadsSettings() throws {

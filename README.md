@@ -1,11 +1,11 @@
 # FigBridge
 
-macOS 原生 `SwiftUI` Figma YAML 工作台，采用 `MVVM` 架构。
+macOS 原生 `SwiftUI` Figma DesignIR 工作台，采用 `MVVM` 架构。
 
 当前仓库已实现首版工程骨架与核心链路：
 
-- `生成` 页：解析多行 Figma `design` 链接、检测 `claude` / `codex`、顺序或并发生成 YAML
-- `查看` 页：扫描批次目录、查看 YAML、导出 zip、从 zip 导入批次
+- `生成` 页：解析多行 Figma `design` 链接、检测 `claude` / `codex`、顺序或并发生成 DesignIR
+- `查看` 页：扫描批次目录、查看 DesignIR、导出 zip、从 zip 导入批次
 - `设置` 页：保存 Figma Token、默认 Prompt、默认输出目录、预览图片格式
 - `Figma REST API`：节点元数据、节点预览图、图片资源解析与本地缓存
 
@@ -41,6 +41,10 @@ swift test
 ./scripts/package-dmg.sh arm64
 ./scripts/package-dmg.sh x86_64
 ```
+
+## 内网鸿蒙生成方案
+
+如果实际项目位于内网、无法访问当前外网大模型，仅能使用 MiniMax，建议采用“外网生成离线设计包 + 内网确定性生成 ArkUI 代码”的两阶段方案。详见 [docs/IntranetHarmonyPlan.md](docs/IntranetHarmonyPlan.md)。
 
 产物分别输出到：
 
