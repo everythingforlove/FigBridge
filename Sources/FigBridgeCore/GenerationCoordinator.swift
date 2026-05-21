@@ -382,10 +382,39 @@ enum BatchNaming {
 enum PromptBuilder {
     private static let designIRInstructions = """
     FigBridge requires strict DesignIR output.
+    Important: FigBridge has already retrieved Figma data before invoking you. Do not call Figma MCP or any external Figma fallback, even if the user template says to do so.
     Output must be exactly one DesignIR JSON or YAML object with these required top-level fields:
     version, screenName, fileKey, nodeId, targetPlatform, viewport, tokens, rootNode, warnings.
     Use version "\(DesignIR.currentVersion)" and targetPlatform "\(TargetPlatform.harmonyArkUI.rawValue)".
-    rootNode must be a frame node. Every node must include id, name, type, children, needsReview, and warnings.
+
+    CRITICAL FORMAT REQUIREMENTS:
+    1. tokens.colors MUST be an array: [{"name":"tokenName","value":"#RRGGBB"}, ...]. Do NOT use object format like {"tokenName":"#RRGGBB"}
+    2. tokens.textStyles MUST be an array: [{"name":"tokenName","style":{...text style fields...}}]
+    3. tokens.spacing and tokens.radii MUST be objects: {"tokenName": number}
+    4. Every layout.padding (if present) MUST include all four sides: top, right, bottom, left (as numbers, default to 0 if not specified)
+    5. Every node must include: id, name, type, children, needsReview, warnings
+    6. rootNode.type must be "frame"
+
+    Example tokens.colors format:
+    "tokens": {
+      "colors": [
+        {"name": "primary", "value": "#3498DB"},
+        {"name": "secondary", "value": "#2ECC71"}
+      ],
+      ...
+    }
+
+    Example layout.padding format (if padding exists):
+    "layout": {
+      "mode": "horizontal",
+      "padding": {
+        "top": 0,
+        "right": 16,
+        "bottom": 0,
+        "left": 16
+      }
+    }
+
     Do not include Markdown code fences, comments, prose, or fallback descriptions.
     """
 
@@ -399,6 +428,9 @@ enum PromptBuilder {
         File Key: \(item.fileKey)
         Node ID: \(item.nodeId)
         Title: \(item.title ?? "")
+        Node Name: \(item.nodeName ?? "")
+
+        \(figmaContextInstructions(for: item))
         """
     }
 
@@ -410,6 +442,9 @@ enum PromptBuilder {
             File Key: \(item.fileKey)
             Node ID: \(item.nodeId)
             Title: \(item.title ?? "")
+            Node Name: \(item.nodeName ?? "")
+
+            \(figmaContextInstructions(for: item))
             """
         }.joined(separator: "\n\n")
 
@@ -433,6 +468,60 @@ enum PromptBuilder {
         Links to process:
         \(itemLines)
         """
+    }
+
+    private static func figmaContextInstructions(for item: FigmaLinkItem) -> String {
+        var lines: [String] = [
+            "FigBridge local Figma context:",
+            "- Do not fetch this Figma node again.",
+            "- Treat the local DesignIR seed as the primary source of truth when present.",
+        ]
+
+        if let previewImagePath = item.previewImagePath {
+            lines.append("- Preview image path: \(previewImagePath)")
+        }
+        if let figmaNodeJSONPath = item.figmaNodeJSONPath {
+            lines.append("- Raw Figma node JSON path: \(figmaNodeJSONPath)")
+        }
+        if let figmaDerivedDesignIRPath = item.figmaDerivedDesignIRPath {
+            lines.append("- FigBridge-derived DesignIR seed path: \(figmaDerivedDesignIRPath)")
+            if let context = inlineFileContext(at: figmaDerivedDesignIRPath) {
+                lines.append(
+                    """
+                    FigBridge-derived DesignIR seed content:
+                    <<<FIGBRIDGE_LOCAL_DESIGN_IR_CONTEXT_START>>>
+                    \(context)
+                    <<<FIGBRIDGE_LOCAL_DESIGN_IR_CONTEXT_END>>>
+                    """
+                )
+            }
+        }
+
+        if !item.resourceItems.isEmpty {
+            let resources = item.resourceItems.map { resource in
+                let localPath = resource.localPath ?? ""
+                return "- \(resource.name) [\(resource.kind.rawValue), \(resource.format.rawValue)] \(localPath)"
+            }.joined(separator: "\n")
+            lines.append("Cached resources:\n\(resources)")
+        }
+
+        if item.figmaDerivedDesignIRPath == nil {
+            lines.append("- No local DesignIR seed is available. Create the best strict DesignIR you can from the provided metadata and include a warning about missing local Figma context.")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private static func inlineFileContext(at path: String) -> String? {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return nil
+        }
+        let limit = 60_000
+        guard text.count > limit else {
+            return text
+        }
+        let prefix = text.prefix(limit)
+        return "\(prefix)\n... truncated by FigBridge after \(limit) characters; read the local file path above if more context is needed."
     }
 }
 

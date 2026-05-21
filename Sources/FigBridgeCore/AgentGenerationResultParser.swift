@@ -52,7 +52,7 @@ public struct AgentGenerationResultParser: Sendable {
         let isLikelyJSON = trimmed.hasPrefix("{") || trimmed.hasPrefix("[")
         do {
             return try decodeAndValidate(
-                Data(trimmed.utf8),
+                normalizedDesignIRData(from: Data(trimmed.utf8)),
                 formatLabel: "DesignIR JSON",
                 expectedItem: expectedItem
             )
@@ -66,7 +66,7 @@ public struct AgentGenerationResultParser: Sendable {
                 var yamlParser = try MinimalYAMLParser(text: trimmed)
                 let yamlData = try yamlParser.jsonData()
                 return try decodeAndValidate(
-                    yamlData,
+                    normalizedDesignIRData(from: yamlData),
                     formatLabel: "DesignIR YAML",
                     expectedItem: expectedItem
                 )
@@ -113,6 +113,136 @@ public struct AgentGenerationResultParser: Sendable {
             design: design,
             normalizedJSON: String(decoding: normalizedData, as: UTF8.self)
         )
+    }
+
+    private func normalizedDesignIRData(from data: Data) throws -> Data {
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return data
+        }
+        normalizeTokens(in: &object)
+        normalizeNodes(in: &object)
+        guard JSONSerialization.isValidJSONObject(object) else {
+            return data
+        }
+        return try JSONSerialization.data(withJSONObject: object)
+    }
+
+    /// Ensures all nodes have complete layout.padding with all four sides
+    private func normalizeNodes(in object: inout [String: Any]) {
+        guard let rootNode = object["rootNode"] as? [String: Any] else { return }
+        var normalizedRoot = rootNode
+        normalizeNodeLayout(&normalizedRoot)
+        object["rootNode"] = normalizedRoot
+    }
+
+    private func normalizeNodeLayout(_ node: inout [String: Any]) {
+        guard var layout = node["layout"] as? [String: Any],
+              layout["padding"] != nil else { return }
+
+        var padding = layout["padding"]
+        if let paddingDict = padding as? [String: Any] {
+            var normalized = paddingDict
+            // Ensure all four sides exist with numeric defaults
+            normalized["top"] = (normalized["top"] as? NSNumber)?.doubleValue ?? 0.0
+            normalized["right"] = (normalized["right"] as? NSNumber)?.doubleValue ?? 0.0
+            normalized["bottom"] = (normalized["bottom"] as? NSNumber)?.doubleValue ?? 0.0
+            normalized["left"] = (normalized["left"] as? NSNumber)?.doubleValue ?? 0.0
+            padding = normalized
+        } else if padding is NSNull {
+            padding = nil
+        }
+        layout["padding"] = padding
+        node["layout"] = layout
+
+        // Recursively process children
+        if let children = node["children"] as? [[String: Any]] {
+            node["children"] = children.map { child in
+                var mutableChild = child
+                normalizeNodeLayout(&mutableChild)
+                return mutableChild
+            }
+        }
+    }
+
+    private func normalizeTokens(in object: inout [String: Any]) {
+        guard var tokens = object["tokens"] as? [String: Any] else {
+            return
+        }
+
+        tokens["colors"] = normalizeTokenArray(
+            tokens["colors"],
+            transformDictionaryValue: { key, dictionary in
+                var normalized = dictionary
+                normalized["name"] = normalized["name"] ?? key
+                return normalized
+            },
+            transformScalarValue: { key, value in
+                ["name": key, "value": value]
+            }
+        )
+
+        tokens["textStyles"] = normalizeTokenArray(
+            tokens["textStyles"],
+            transformDictionaryValue: { key, dictionary in
+                if dictionary["style"] != nil {
+                    var normalized = dictionary
+                    normalized["name"] = normalized["name"] ?? key
+                    return normalized
+                }
+                return ["name": key, "style": dictionary]
+            },
+            transformScalarValue: { key, _ in
+                ["name": key, "style": [:]]
+            }
+        )
+
+        tokens["spacing"] = normalizeNumericTokenMap(tokens["spacing"])
+        tokens["radii"] = normalizeNumericTokenMap(tokens["radii"])
+        object["tokens"] = tokens
+    }
+
+    private func normalizeTokenArray(
+        _ value: Any?,
+        transformDictionaryValue: (String, [String: Any]) -> [String: Any],
+        transformScalarValue: (String, Any) -> [String: Any]
+    ) -> Any {
+        switch value {
+        case nil, is NSNull:
+            return [Any]()
+        case let array as [Any]:
+            return array
+        case let dictionary as [String: Any]:
+            return dictionary.keys.sorted().map { key in
+                let rawValue = dictionary[key] ?? NSNull()
+                if let nestedDictionary = rawValue as? [String: Any] {
+                    return transformDictionaryValue(key, nestedDictionary)
+                }
+                return transformScalarValue(key, rawValue)
+            }
+        default:
+            return [Any]()
+        }
+    }
+
+    private func normalizeNumericTokenMap(_ value: Any?) -> Any {
+        switch value {
+        case nil, is NSNull:
+            return [String: Any]()
+        case let dictionary as [String: Any]:
+            return dictionary
+        case let array as [[String: Any]]:
+            var result: [String: Any] = [:]
+            for item in array {
+                guard let name = item["name"] as? String,
+                      let tokenValue = item["value"] ?? item["size"] ?? item["radius"] else {
+                    continue
+                }
+                result[name] = tokenValue
+            }
+            return result
+        default:
+            return [String: Any]()
+        }
     }
 
     private func parserError(from error: Error, formatLabel: String) -> AgentGenerationResultParserError {

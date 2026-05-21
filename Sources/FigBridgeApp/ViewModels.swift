@@ -383,6 +383,8 @@ final class GenerateViewModel: ObservableObject {
             return
         }
 
+        await prepareFigmaContextForPendingItems()
+
         let sessionID = generationSessionController.beginSession()
         isGenerating = true
         completedCount = 0
@@ -548,6 +550,25 @@ final class GenerateViewModel: ObservableObject {
     func preloadResourcesForAllItemsIfNeeded() {
         for item in items {
             scheduleResourceLoad(for: item.id, force: false)
+        }
+    }
+
+    private func prepareFigmaContextForPendingItems() async {
+        guard !isTokenMissing else {
+            return
+        }
+        let itemIDs = pendingItems.map(\.id)
+        guard !itemIDs.isEmpty else {
+            return
+        }
+        progressText = "正在准备 Figma 本地上下文"
+        for itemID in itemIDs {
+            guard let item = items.first(where: { $0.id == itemID }),
+                  item.figmaDerivedDesignIRPath == nil else {
+                continue
+            }
+            resourceLoadController.cancel(for: itemID)
+            await loadResources(for: itemID)
         }
     }
 

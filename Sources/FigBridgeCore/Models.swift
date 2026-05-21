@@ -272,7 +272,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.defaultAgentCallStrategy = defaultAgentCallStrategy
     }
 
-    public static let defaultPrompt = """
+    public static let legacyFigmaMCPDefaultPrompt = """
     Generate a strict DesignIR JSON or YAML object for this Figma node.
     Include layout, typography, colors, spacing, assets, and visible interaction notes in the DesignIR fields.
     You must call figma mcp to retrieve Figma data.
@@ -280,6 +280,37 @@ public struct AppSettings: Codable, Equatable, Sendable {
     Do not use fallback or alternative methods.
     Return DesignIR only. Do not include Markdown, code fences, prose, or extra keys outside the DesignIR schema.
     """
+
+    public static let legacyYAMLFigmaMCPDefaultPrompt = """
+    Generate a clean YAML description for this Figma node.
+    Include layout, typography, colors, spacing, assets, and interaction notes when visible.
+    You must call figma mcp to retrieve Figma data.
+    If calling figma mcp fails, stop immediately and report the failure.
+    Do not use fallback or alternative methods.
+    Return YAML only.
+    """
+
+    public static let defaultPrompt = """
+    Generate a strict DesignIR JSON or YAML object for this Figma node.
+    Use the FigBridge-provided local Figma context in the prompt as the source of truth.
+    Do not call Figma MCP, browser tools, or external Figma fallback methods.
+    Include layout, typography, colors, spacing, cached assets, and visible interaction notes in the DesignIR fields.
+    Return DesignIR only. Do not include Markdown, code fences, prose, or extra keys outside the DesignIR schema.
+    """
+
+    public static func migratingLegacyPromptIfNeeded(_ prompt: String) -> String {
+        let normalizedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let legacyPrompts = [
+            legacyFigmaMCPDefaultPrompt,
+            legacyYAMLFigmaMCPDefaultPrompt
+        ]
+        for legacyPrompt in legacyPrompts {
+            if normalizedPrompt == legacyPrompt.trimmingCharacters(in: .whitespacesAndNewlines) {
+                return defaultPrompt
+            }
+        }
+        return prompt
+    }
 
     public static let defaultValue = AppSettings(
         promptTemplate: AppSettings.defaultPrompt,
@@ -368,6 +399,8 @@ public struct FigmaLinkItem: Codable, Equatable, Identifiable, Sendable {
     public var nodeName: String?
     public var agentOutputPath: String?
     public var logSummary: String?
+    public var figmaNodeJSONPath: String?
+    public var figmaDerivedDesignIRPath: String?
 
     public init(
         id: UUID = UUID(),
@@ -385,7 +418,9 @@ public struct FigmaLinkItem: Codable, Equatable, Identifiable, Sendable {
         errorMessage: String? = nil,
         nodeName: String? = nil,
         agentOutputPath: String? = nil,
-        logSummary: String? = nil
+        logSummary: String? = nil,
+        figmaNodeJSONPath: String? = nil,
+        figmaDerivedDesignIRPath: String? = nil
     ) {
         self.id = id
         self.rawInputLine = rawInputLine
@@ -403,6 +438,8 @@ public struct FigmaLinkItem: Codable, Equatable, Identifiable, Sendable {
         self.nodeName = nodeName
         self.agentOutputPath = agentOutputPath
         self.logSummary = logSummary
+        self.figmaNodeJSONPath = figmaNodeJSONPath
+        self.figmaDerivedDesignIRPath = figmaDerivedDesignIRPath
     }
 }
 
@@ -616,11 +653,13 @@ public struct FigmaNodePayload: Sendable, Equatable {
     public var previewURL: String?
     public var resources: [FigmaResourceItem]
     public var document: FigmaDocumentNode?
+    public var documentJSON: Data?
 
-    public init(name: String, previewURL: String?, resources: [FigmaResourceItem], document: FigmaDocumentNode? = nil) {
+    public init(name: String, previewURL: String?, resources: [FigmaResourceItem], document: FigmaDocumentNode? = nil, documentJSON: Data? = nil) {
         self.name = name
         self.previewURL = previewURL
         self.resources = resources
         self.document = document
+        self.documentJSON = documentJSON
     }
 }

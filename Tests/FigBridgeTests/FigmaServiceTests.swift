@@ -106,6 +106,12 @@ struct FigmaServiceTests {
         #expect(resolved.resourceItems.allSatisfy { $0.localPath != nil })
         #expect(resolved.previewImagePath?.contains("/items/item-1/assets/preview.png") == true)
         #expect(resolved.resourceItems.allSatisfy { $0.localPath?.contains("/items/item-1/assets/") == true })
+        #expect(resolved.figmaNodeJSONPath?.contains("/items/item-1/figma-context/figma-node.json") == true)
+        #expect(resolved.figmaDerivedDesignIRPath?.contains("/items/item-1/figma-context/figma-derived-design-ir.json") == true)
+        let figmaNodeJSONPath = try #require(resolved.figmaNodeJSONPath)
+        let figmaDerivedDesignIRPath = try #require(resolved.figmaDerivedDesignIRPath)
+        #expect(FileManager.default.fileExists(atPath: figmaNodeJSONPath))
+        #expect(FileManager.default.fileExists(atPath: figmaDerivedDesignIRPath))
     }
 
     @Test func usesConfiguredPreviewFormatForRequestAndCacheFilename() async throws {

@@ -17,7 +17,9 @@ public final class SettingsStore: Sendable {
             return .defaultValue
         }
         let data = try Data(contentsOf: fileURL)
-        return try decoder.decode(AppSettings.self, from: data)
+        var settings = try decoder.decode(AppSettings.self, from: data)
+        settings.promptTemplate = AppSettings.migratingLegacyPromptIfNeeded(settings.promptTemplate)
+        return settings
     }
 
     public func save(_ settings: AppSettings) throws {

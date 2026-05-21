@@ -25,6 +25,54 @@ struct AgentGenerationResultParserTests {
         #expect(result.design.nodeId == "1:2")
     }
 
+    @Test func normalizesCommonAgentTokenMapShapes() throws {
+        let item = FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2")
+        let output = """
+        {
+          "version": "design-ir/v1",
+          "screenName": "Login",
+          "fileKey": "FILE1",
+          "nodeId": "1:2",
+          "targetPlatform": "harmony-arkui",
+          "viewport": { "width": 360, "height": 640 },
+          "tokens": {
+            "colors": {
+              "brandPrimary": "#E93030",
+              "textPrimary": { "value": "#111111" }
+            },
+            "textStyles": {
+              "body": { "fontSize": 14, "fontWeight": "400" }
+            },
+            "spacing": [
+              { "name": "pagePadding", "value": 16 }
+            ],
+            "radii": [
+              { "name": "card", "radius": 8 }
+            ]
+          },
+          "rootNode": {
+            "id": "1:2",
+            "name": "Login",
+            "type": "frame",
+            "bounds": { "x": 0, "y": 0, "width": 360, "height": 640 },
+            "children": [],
+            "needsReview": false,
+            "warnings": []
+          },
+          "warnings": []
+        }
+        """
+
+        let result = try AgentGenerationResultParser().parse(output, expectedItem: item)
+
+        #expect(result.design.tokens.colors.map(\.name) == ["brandPrimary", "textPrimary"])
+        #expect(result.design.tokens.colors.map(\.value) == ["#E93030", "#111111"])
+        #expect(result.design.tokens.textStyles.first?.name == "body")
+        #expect(result.design.tokens.textStyles.first?.style.fontSize == 14)
+        #expect(result.design.tokens.spacing["pagePadding"] == 16)
+        #expect(result.design.tokens.radii["card"] == 8)
+    }
+
     @Test func rejectsMissingFieldsMarkdownAndMalformedOutput() {
         let parser = AgentGenerationResultParser()
         let item = FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2")

@@ -34,6 +34,43 @@ struct GenerationCoordinatorTests {
         #expect(batch.summary.items.allSatisfy { $0.generatedYAMLPath != nil })
     }
 
+    @Test func promptUsesLocalFigmaContextInsteadOfFigmaMCP() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let seedURL = sandbox.root.appendingPathComponent("figma-derived-design-ir.json")
+        try #"{"version":"design-ir/v1","screenName":"Seed"}"#.write(to: seedURL, atomically: true, encoding: .utf8)
+        let batchStore = BatchStore(rootDirectory: sandbox.root.appendingPathComponent("batches", isDirectory: true))
+        let runner = MockAgentRunner(outputs: [
+            "FILE1|1:2": .success(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "first")),
+        ])
+        let coordinator = GenerationCoordinator(batchStore: batchStore, agentRunner: runner)
+        let item = FigmaLinkItem(
+            rawInputLine: "one",
+            title: "one",
+            url: "https://www.figma.com/design/FILE1/A?node-id=1-2",
+            fileKey: "FILE1",
+            nodeId: "1:2",
+            figmaDerivedDesignIRPath: seedURL.path
+        )
+
+        _ = try await coordinator.generate(
+            agent: .codex,
+            promptTemplate: AppSettings.legacyFigmaMCPDefaultPrompt,
+            sourceInputText: "input",
+            outputDirectory: sandbox.root,
+            mode: .sequential,
+            parallelism: 1,
+            callStrategy: .singlePerLink,
+            items: [item]
+        )
+
+        let prompt = try #require(await runner.recordedPrompts().first)
+        #expect(prompt.contains("Do not call Figma MCP"))
+        #expect(prompt.contains("FigBridge-derived DesignIR seed content"))
+        #expect(prompt.contains(#""screenName":"Seed""#))
+    }
+
     @Test func runsParallelGenerationAndKeepsFailures() async throws {
         let sandbox = try TestSandbox()
         defer { sandbox.cleanup() }
@@ -369,6 +406,7 @@ struct GenerationCoordinatorTests {
 private actor MockAgentRunner: AgentRunning {
     let outputs: [String: Result<String, Error>]
     private var calls: [String] = []
+    private var prompts: [String] = []
 
     init(outputs: [String: Result<String, Error>]) {
         self.outputs = outputs
@@ -377,6 +415,7 @@ private actor MockAgentRunner: AgentRunning {
     func run(provider: AgentProvider, prompt: String, item: FigmaLinkItem, eventHandler: (@Sendable (AgentRunEvent) async -> Void)? = nil) async throws -> AgentRunResult {
         let key = "\(item.fileKey)|\(item.nodeId)"
         calls.append(key)
+        prompts.append(prompt)
         guard let result = outputs[key] else {
             throw MockFailure()
         }
@@ -385,6 +424,10 @@ private actor MockAgentRunner: AgentRunning {
 
     func recordedCalls() -> [String] {
         calls
+    }
+
+    func recordedPrompts() -> [String] {
+        prompts
     }
 }
 

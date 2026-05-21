@@ -22,7 +22,7 @@ struct GeneratePage: View {
             case .agent:
                 "1. agent 说明"
             case .figmaMCP:
-                "2. figma mcp 说明"
+                "2. Figma 数据通道说明"
             case .figmaToken:
                 "3. figma token 设置说明（结合预览和资源）"
             case .runtime:
@@ -417,7 +417,8 @@ struct GeneratePage: View {
             """
         case .figmaMCP:
             """
-            这里的 figma mcp 可以理解为应用访问 Figma 数据与资源的通道：会基于链接中的 fileKey/nodeId 拉取节点信息、预览图与资源地址，再缓存到本地批次。
+            这里的 Figma 数据通道由 FigBridge 应用自己负责：会基于链接中的 fileKey/nodeId 拉取节点信息、预览图与资源地址，再缓存成本地上下文。
+            生成时 Agent 会读取 FigBridge 已准备好的本地上下文，不需要依赖 Claude/Codex 环境里的 Figma MCP。
             选中条目后会触发懒加载，右侧“详情”会显示预览状态、资源状态和具体资源列表。
             """
         case .figmaToken:

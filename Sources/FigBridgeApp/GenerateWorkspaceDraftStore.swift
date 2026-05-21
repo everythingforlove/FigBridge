@@ -57,7 +57,7 @@ struct GenerateWorkspaceDraft: Codable, Equatable {
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         selectedAgentID = try container.decodeIfPresent(String.self, forKey: .selectedAgentID)
-        promptTemplate = try container.decode(String.self, forKey: .promptTemplate)
+        promptTemplate = AppSettings.migratingLegacyPromptIfNeeded(try container.decode(String.self, forKey: .promptTemplate))
         outputDirectoryPath = try container.decode(String.self, forKey: .outputDirectoryPath)
         mode = try container.decode(GenerationMode.self, forKey: .mode)
         parallelism = try container.decode(Int.self, forKey: .parallelism)

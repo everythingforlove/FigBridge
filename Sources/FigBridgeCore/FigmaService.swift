@@ -105,13 +105,15 @@ public actor FigmaService {
         async let previewData = performJSONRequest(imagesRequest)
         async let resourceData = performJSONRequest(fileImagesRequest)
 
-        let nodeResponse = try decode(NodeResponse.self, from: try await nodeData)
+        let resolvedNodeData = try await nodeData
+        let nodeResponse = try decode(NodeResponse.self, from: resolvedNodeData)
         let previewResponse = try decode(PreviewResponse.self, from: try await previewData)
         let imageLookupResponse = try decode(ImageLookupResponse.self, from: try await resourceData)
 
         guard let node = nodeResponse.nodes[nodeId]?.document else {
             throw FigmaServiceError.invalidPayload
         }
+        let documentJSON = try? extractDocumentJSON(from: resolvedNodeData, nodeId: nodeId)
 
         let imageRefs = collectImageRefs(from: node)
         let resources = imageRefs.compactMap { ref -> FigmaResourceItem? in
@@ -130,7 +132,8 @@ public actor FigmaService {
             name: node.name,
             previewURL: previewResponse.images[nodeId] ?? nil,
             resources: resources,
-            document: node
+            document: node,
+            documentJSON: documentJSON
         )
     }
 
@@ -181,7 +184,46 @@ public actor FigmaService {
 
         resolved.resourceItems = cachedResources
         resolved.resourceStatus = didFailToCacheAnyResource ? .failed : .success
+        try cacheLocalFigmaContext(
+            payload,
+            for: &resolved,
+            itemDirectory: itemDirectory,
+            cachedResources: cachedResources
+        )
         return resolved
+    }
+
+    private func cacheLocalFigmaContext(
+        _ payload: FigmaNodePayload,
+        for item: inout FigmaLinkItem,
+        itemDirectory: URL,
+        cachedResources: [FigmaResourceItem]
+    ) throws {
+        let contextDirectory = itemDirectory.appendingPathComponent("figma-context", isDirectory: true)
+        try FileManager.default.createDirectory(at: contextDirectory, withIntermediateDirectories: true)
+
+        if let documentJSON = payload.documentJSON {
+            let documentURL = contextDirectory.appendingPathComponent("figma-node.json")
+            try documentJSON.write(to: documentURL)
+            item.figmaNodeJSONPath = documentURL.path
+        }
+
+        guard let document = payload.document else {
+            return
+        }
+
+        let design = FigmaNodeToDesignIRMapper().map(
+            document: document,
+            fileKey: item.fileKey,
+            nodeId: item.nodeId,
+            resources: cachedResources
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let designData = try encoder.encode(design)
+        let designURL = contextDirectory.appendingPathComponent("figma-derived-design-ir.json")
+        try designData.write(to: designURL)
+        item.figmaDerivedDesignIRPath = designURL.path
     }
 
     private func downloadFile(from urlString: String, token: String, destinationDirectory: URL, filename: String) async throws -> URL {
@@ -236,6 +278,16 @@ public actor FigmaService {
         } catch {
             throw FigmaServiceError.invalidPayload
         }
+    }
+
+    private func extractDocumentJSON(from data: Data, nodeId: String) throws -> Data {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let nodes = object["nodes"] as? [String: Any],
+              let nodeContainer = nodes[nodeId] as? [String: Any],
+              let document = nodeContainer["document"] else {
+            throw FigmaServiceError.invalidPayload
+        }
+        return try JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys])
     }
 
     private func collectImageRefs(from node: FigmaDocumentNode) -> [String] {
