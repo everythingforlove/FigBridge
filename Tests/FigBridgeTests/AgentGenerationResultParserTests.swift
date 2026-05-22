@@ -73,6 +73,55 @@ struct AgentGenerationResultParserTests {
         #expect(result.design.tokens.radii["card"] == 8)
     }
 
+    @Test func normalizesAbsoluteCachedAssetPathsToPackageRelativePaths() throws {
+        let item = FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2")
+        let output = """
+        {
+          "version": "design-ir/v1",
+          "screenName": "Login",
+          "fileKey": "FILE1",
+          "nodeId": "1:2",
+          "targetPlatform": "harmony-arkui",
+          "viewport": { "width": 360, "height": 640 },
+          "tokens": {
+            "colors": [],
+            "textStyles": [],
+            "spacing": {},
+            "radii": {}
+          },
+          "rootNode": {
+            "id": "1:2",
+            "name": "Login",
+            "type": "frame",
+            "bounds": { "x": 0, "y": 0, "width": 360, "height": 640 },
+            "children": [
+              {
+                "id": "2:1",
+                "name": "icon_bot_24",
+                "type": "icon",
+                "asset": {
+                  "name": "icon_bot_24",
+                  "localPath": "/Users/xiejialin/Library/Application Support/FigBridge/Batches/batch/items/item/assets/icon_bot_24.svg",
+                  "kind": "icon",
+                  "format": "svg"
+                },
+                "children": [],
+                "needsReview": false,
+                "warnings": []
+              }
+            ],
+            "needsReview": false,
+            "warnings": []
+          },
+          "warnings": []
+        }
+        """
+
+        let result = try AgentGenerationResultParser().parse(output, expectedItem: item)
+
+        #expect(result.design.rootNode.children.first?.asset?.localPath == "assets/icon_bot_24.svg")
+    }
+
     @Test func rejectsMissingFieldsMarkdownAndMalformedOutput() {
         let parser = AgentGenerationResultParser()
         let item = FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2")

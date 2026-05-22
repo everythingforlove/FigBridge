@@ -132,6 +132,7 @@ public struct AgentGenerationResultParser: Sendable {
         guard let rootNode = object["rootNode"] as? [String: Any] else { return }
         var normalizedRoot = rootNode
         normalizeNodeLayout(&normalizedRoot)
+        normalizeNodeAssetPaths(&normalizedRoot)
         object["rootNode"] = normalizedRoot
     }
 
@@ -159,6 +160,23 @@ public struct AgentGenerationResultParser: Sendable {
             node["children"] = children.map { child in
                 var mutableChild = child
                 normalizeNodeLayout(&mutableChild)
+                return mutableChild
+            }
+        }
+    }
+
+    private func normalizeNodeAssetPaths(_ node: inout [String: Any]) {
+        if var asset = node["asset"] as? [String: Any],
+           let localPath = asset["localPath"] as? String,
+           let normalizedPath = DesignIRAssetPathNormalizer.packageRelativeAssetPath(fromPossiblyUnsafePath: localPath) {
+            asset["localPath"] = normalizedPath
+            node["asset"] = asset
+        }
+
+        if let children = node["children"] as? [[String: Any]] {
+            node["children"] = children.map { child in
+                var mutableChild = child
+                normalizeNodeAssetPaths(&mutableChild)
                 return mutableChild
             }
         }

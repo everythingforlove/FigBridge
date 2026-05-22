@@ -69,6 +69,26 @@ struct ArkUIGeneratorTests {
         #expect(result.resources.first?.resourceName == "asset_1_hero_image")
     }
 
+    @Test func referencesExistingSemanticColorResourcesByTokenName() throws {
+        var design = makeDesignIR()
+        design.tokens = DesignTokenSet(colors: [
+            DesignColorToken(name: "color-elements-text-primary-02", value: "#D6000000")
+        ])
+        design.rootNode.children[1].style = DesignStyle(
+            text: DesignTextStyle(
+                fontSize: 24,
+                fontWeight: "600",
+                color: "color-elements-text-primary-02"
+            )
+        )
+
+        let result = try ArkUIGenerator().generate(design: design)
+        let file = try #require(result.files.first)
+
+        #expect(file.content.contains(".fontColor($r('app.color.color-elements-text-primary-02'))"))
+        #expect(result.files.count == 1)
+    }
+
     private func makeDesignIR(screenName: String = "Login Page", assetName: String = "Hero Image") -> DesignIR {
         let image = DesignNode(
             id: "2:1",

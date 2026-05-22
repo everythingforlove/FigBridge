@@ -289,6 +289,86 @@ struct FigmaServiceTests {
         #expect(resolved.resourceItems.isEmpty)
     }
 
+    @Test func resolvesNamedIconNodesFromLocalImageLibrary() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let libraryDirectory = sandbox.root.appendingPathComponent("icon-library", isDirectory: true)
+        try FileManager.default.createDirectory(at: libraryDirectory, withIntermediateDirectories: true)
+        let iconURL = libraryDirectory.appendingPathComponent("icon_home_24.svg")
+        try Data("<svg></svg>".utf8).write(to: iconURL)
+
+        let localResources = LocalDesignResourceResolver(
+            imageAssets: ImageAssetLibrary(assets: [
+                ImageAssetMatch(assetName: "icon_home_24", url: iconURL, kind: .icon, format: .svg)
+            ])
+        )
+        let transport = MockFigmaTransport(responses: [
+            MockHTTPResponse(
+                path: "/v1/files/FILE123/nodes",
+                query: ["ids": "1:2"],
+                statusCode: 200,
+                body: """
+                {
+                  "nodes": {
+                    "1:2": {
+                      "document": {
+                        "id": "1:2",
+                        "name": "Toolbar",
+                        "type": "FRAME",
+                        "fills": [],
+                        "children": [
+                          {
+                            "id": "2:3",
+                            "name": "Button/Icon/icon_home_24",
+                            "type": "INSTANCE",
+                            "fills": [],
+                            "children": []
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+                """
+            ),
+            MockHTTPResponse(
+                path: "/v1/images/FILE123",
+                query: ["ids": "1:2", "format": "png", "scale": "2"],
+                statusCode: 200,
+                body: #"{"images":{"1:2":null}}"#
+            ),
+            MockHTTPResponse(
+                path: "/v1/files/FILE123/images",
+                query: [:],
+                statusCode: 200,
+                body: #"{"meta":{"images":{}}}"#
+            )
+        ])
+        let service = FigmaService(baseDirectory: sandbox.root, transport: transport, localResources: localResources)
+        let item = FigmaLinkItem(
+            rawInputLine: "工具栏",
+            title: "工具栏",
+            url: "https://www.figma.com/design/FILE123/App?node-id=1-2",
+            fileKey: "FILE123",
+            nodeId: "1:2"
+        )
+        let itemDirectory = sandbox.root.appendingPathComponent("batch-1/items/item-1", isDirectory: true)
+
+        let resolved = try await service.loadPreviewAndResources(for: item, itemDirectory: itemDirectory, token: "token", previewFormat: .png)
+
+        #expect(resolved.resourceStatus == .success)
+        #expect(resolved.resourceItems.count == 1)
+        #expect(resolved.resourceItems.first?.name == "icon_home_24")
+        #expect(resolved.resourceItems.first?.localPath?.hasSuffix("/assets/icon_home_24.svg") == true)
+
+        let designPath = try #require(resolved.figmaDerivedDesignIRPath)
+        let design = try JSONDecoder().decode(DesignIR.self, from: Data(contentsOf: URL(fileURLWithPath: designPath)))
+        let iconNode = try #require(design.rootNode.children.first)
+        #expect(iconNode.type == .icon)
+        #expect(iconNode.asset?.name == "icon_home_24")
+    }
+
     @Test func marksResourceStatusFailedWhenAnyResourceDownloadFails() async throws {
         let sandbox = try TestSandbox()
         defer { sandbox.cleanup() }

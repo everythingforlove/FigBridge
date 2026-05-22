@@ -18,6 +18,7 @@ public struct FigmaDocumentNode: Decodable, Equatable, Sendable {
     public var opacity: Double?
     public var characters: String?
     public var style: FigmaTextStyle?
+    public var boundVariables: FigmaBoundVariables?
     public var children: [FigmaDocumentNode]
 
     public init(
@@ -38,6 +39,7 @@ public struct FigmaDocumentNode: Decodable, Equatable, Sendable {
         opacity: Double? = nil,
         characters: String? = nil,
         style: FigmaTextStyle? = nil,
+        boundVariables: FigmaBoundVariables? = nil,
         children: [FigmaDocumentNode] = []
     ) {
         self.id = id
@@ -57,6 +59,7 @@ public struct FigmaDocumentNode: Decodable, Equatable, Sendable {
         self.opacity = opacity
         self.characters = characters
         self.style = style
+        self.boundVariables = boundVariables
         self.children = children
     }
 
@@ -80,6 +83,7 @@ public struct FigmaDocumentNode: Decodable, Equatable, Sendable {
         opacity = try container.decodeIfPresent(Double.self, forKey: .opacity)
         characters = try container.decodeIfPresent(String.self, forKey: .characters)
         style = try container.decodeIfPresent(FigmaTextStyle.self, forKey: .style)
+        boundVariables = try container.decodeIfPresent(FigmaBoundVariables.self, forKey: .boundVariables)
         children = try container.decodeIfPresent([FigmaDocumentNode].self, forKey: .children) ?? []
     }
 
@@ -102,6 +106,7 @@ public struct FigmaDocumentNode: Decodable, Equatable, Sendable {
         case opacity
         case characters
         case style
+        case boundVariables
         case children
     }
 }
@@ -134,6 +139,21 @@ public struct FigmaColor: Decodable, Equatable, Sendable {
         self.b = b
         self.a = a
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        r = try container.decode(Double.self, forKey: .r)
+        g = try container.decode(Double.self, forKey: .g)
+        b = try container.decode(Double.self, forKey: .b)
+        a = try container.decodeIfPresent(Double.self, forKey: .a) ?? 1
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case r
+        case g
+        case b
+        case a
+    }
 }
 
 public struct FigmaTextStyle: Decodable, Equatable, Sendable {
@@ -158,5 +178,80 @@ public struct FigmaTextStyle: Decodable, Equatable, Sendable {
         self.fontSize = fontSize
         self.lineHeightPx = lineHeightPx
         self.textAlignHorizontal = textAlignHorizontal
+    }
+}
+
+public struct FigmaVariableAlias: Decodable, Equatable, Sendable {
+    public var type: String?
+    public var id: String
+
+    public init(type: String? = nil, id: String) {
+        self.type = type
+        self.id = id
+    }
+}
+
+public struct FigmaBoundVariables: Decodable, Equatable, Sendable {
+    public var fills: [FigmaVariableAlias]
+    public var strokes: [FigmaVariableAlias]
+    public var variablesByField: [String: [FigmaVariableAlias]]
+
+    public init(
+        fills: [FigmaVariableAlias] = [],
+        strokes: [FigmaVariableAlias] = [],
+        variablesByField: [String: [FigmaVariableAlias]] = [:]
+    ) {
+        self.fills = fills
+        self.strokes = strokes
+        self.variablesByField = variablesByField
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        var fields: [String: [FigmaVariableAlias]] = [:]
+
+        for key in container.allKeys {
+            if let aliases = try Self.decodeAliases(from: container, forKey: key) {
+                fields[key.stringValue] = aliases
+            }
+        }
+
+        fills = fields["fills"] ?? []
+        strokes = fields["strokes"] ?? []
+        variablesByField = fields
+    }
+
+    public func variableID(for field: String, index: Int = 0) -> String? {
+        guard let aliases = variablesByField[field], aliases.indices.contains(index) else {
+            return nil
+        }
+        return aliases[index].id
+    }
+
+    private static func decodeAliases(
+        from container: KeyedDecodingContainer<DynamicCodingKey>,
+        forKey key: DynamicCodingKey
+    ) throws -> [FigmaVariableAlias]? {
+        if let aliases = try? container.decode([FigmaVariableAlias].self, forKey: key) {
+            return aliases
+        }
+        if let alias = try? container.decode(FigmaVariableAlias.self, forKey: key) {
+            return [alias]
+        }
+        return nil
+    }
+}
+
+private struct DynamicCodingKey: CodingKey {
+    var stringValue: String
+    var intValue: Int?
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+    }
+
+    init?(intValue: Int) {
+        self.stringValue = "\(intValue)"
+        self.intValue = intValue
     }
 }

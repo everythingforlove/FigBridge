@@ -5,17 +5,26 @@ public struct ArkUIGenerationOptions: Equatable, Sendable {
     public var pagesDirectory: String
     public var mediaDirectory: String
     public var mediaResourcePrefix: String
+    public var colorResourceDirectory: String
+    public var colorResourcePrefix: String
+    public var generateColorResourceFile: Bool
 
     public init(
         pageName: String? = nil,
         pagesDirectory: String = "entry/src/main/ets/pages",
         mediaDirectory: String = "entry/src/main/resources/base/media",
-        mediaResourcePrefix: String = "app.media"
+        mediaResourcePrefix: String = "app.media",
+        colorResourceDirectory: String = "entry/src/main/resources/base/element",
+        colorResourcePrefix: String = "app.color",
+        generateColorResourceFile: Bool = false
     ) {
         self.pageName = pageName
         self.pagesDirectory = pagesDirectory
         self.mediaDirectory = mediaDirectory
         self.mediaResourcePrefix = mediaResourcePrefix
+        self.colorResourceDirectory = colorResourceDirectory
+        self.colorResourcePrefix = colorResourcePrefix
+        self.generateColorResourceFile = generateColorResourceFile
     }
 }
 
@@ -81,11 +90,13 @@ public struct ArkUIGenerator: Sendable {
         var warnings = design.warnings
         var resources: [ArkUIResourceMapping] = []
         var usedResourceNames = Set<String>()
+        let colorContext = ColorTokenContext(tokens: design.tokens.colors, resourcePrefix: options.colorResourcePrefix)
         let pageName = sanitizeTypeName(options.pageName ?? design.screenName)
         let body = emitNode(
             design.rootNode,
             level: 2,
             options: options,
+            colorContext: colorContext,
             resources: &resources,
             usedResourceNames: &usedResourceNames,
             warnings: &warnings
@@ -101,8 +112,14 @@ public struct ArkUIGenerator: Sendable {
         """
 
         let relativePath = "\(options.pagesDirectory)/\(pageName).ets"
+        var files = [ArkUIGeneratedFile(relativePath: relativePath, content: content)]
+        if options.generateColorResourceFile,
+           let colorFile = try colorContext.generatedFile(directory: options.colorResourceDirectory) {
+            files.append(colorFile)
+        }
+
         return ArkUIGenerationResult(
-            files: [ArkUIGeneratedFile(relativePath: relativePath, content: content)],
+            files: files,
             resources: resources,
             warnings: Array(Set(warnings)).sorted()
         )
@@ -112,6 +129,7 @@ public struct ArkUIGenerator: Sendable {
         _ node: DesignNode,
         level: Int,
         options: ArkUIGenerationOptions,
+        colorContext: ColorTokenContext,
         resources: inout [ArkUIResourceMapping],
         usedResourceNames: inout Set<String>,
         warnings: inout [String]
@@ -150,7 +168,7 @@ public struct ArkUIGenerator: Sendable {
             } else {
                 componentStart = "\(indent)Button() {"
                 emittedChildren = node.children.map {
-                    emitNode($0, level: level + 1, options: options, resources: &resources, usedResourceNames: &usedResourceNames, warnings: &warnings)
+                    emitNode($0, level: level + 1, options: options, colorContext: colorContext, resources: &resources, usedResourceNames: &usedResourceNames, warnings: &warnings)
                 }.joined(separator: "\n")
             }
         case .input:
@@ -158,7 +176,7 @@ public struct ArkUIGenerator: Sendable {
         case .frame, .list, .unknown:
             componentStart = "\(indent)\(containerExpression(for: node, warnings: &warnings)) {"
             emittedChildren = node.children.map {
-                emitNode($0, level: level + 1, options: options, resources: &resources, usedResourceNames: &usedResourceNames, warnings: &warnings)
+                emitNode($0, level: level + 1, options: options, colorContext: colorContext, resources: &resources, usedResourceNames: &usedResourceNames, warnings: &warnings)
             }.joined(separator: "\n")
         }
 
@@ -171,7 +189,7 @@ public struct ArkUIGenerator: Sendable {
             lines.append("\(indent)}")
         }
 
-        lines.append(contentsOf: modifierLines(for: node, level: level))
+        lines.append(contentsOf: modifierLines(for: node, level: level, colorContext: colorContext))
         return lines.joined(separator: "\n")
     }
 
@@ -201,7 +219,7 @@ public struct ArkUIGenerator: Sendable {
         }
     }
 
-    private func modifierLines(for node: DesignNode, level: Int) -> [String] {
+    private func modifierLines(for node: DesignNode, level: Int, colorContext: ColorTokenContext) -> [String] {
         let indent = indentation(level + 1)
         var lines: [String] = []
 
@@ -220,7 +238,7 @@ public struct ArkUIGenerator: Sendable {
 
         if let style = node.style {
             if let fill = style.fill {
-                lines.append("\(indent).backgroundColor('\(escapeString(fill))')")
+                lines.append("\(indent).backgroundColor(\(colorExpression(fill, context: colorContext)))")
             }
             if let cornerRadius = style.cornerRadius {
                 lines.append("\(indent).borderRadius(\(formatNumber(cornerRadius)))")
@@ -229,25 +247,25 @@ public struct ArkUIGenerator: Sendable {
                 lines.append("\(indent).opacity(\(formatNumber(opacity)))")
             }
             if style.stroke != nil || style.strokeWidth != nil {
-                let color = style.stroke.map { "'\(escapeString($0))'" } ?? "'#000000'"
+                let color = style.stroke.map { colorExpression($0, context: colorContext) } ?? "'#000000'"
                 let width = formatNumber(style.strokeWidth ?? 1)
                 lines.append("\(indent).border({ width: \(width), color: \(color) })")
             }
             if let textStyle = style.text {
-                lines.append(contentsOf: textModifierLines(for: textStyle, indent: indent))
+                lines.append(contentsOf: textModifierLines(for: textStyle, indent: indent, colorContext: colorContext))
             }
         }
 
         return lines
     }
 
-    private func textModifierLines(for style: DesignTextStyle, indent: String) -> [String] {
+    private func textModifierLines(for style: DesignTextStyle, indent: String, colorContext: ColorTokenContext) -> [String] {
         var lines: [String] = []
         if let fontSize = style.fontSize {
             lines.append("\(indent).fontSize(\(formatNumber(fontSize)))")
         }
         if let color = style.color {
-            lines.append("\(indent).fontColor('\(escapeString(color))')")
+            lines.append("\(indent).fontColor(\(colorExpression(color, context: colorContext)))")
         }
         if let lineHeight = style.lineHeight {
             lines.append("\(indent).lineHeight(\(formatNumber(lineHeight)))")
@@ -259,6 +277,13 @@ public struct ArkUIGenerator: Sendable {
             lines.append("\(indent).textAlign(\(expression))")
         }
         return lines
+    }
+
+    private func colorExpression(_ value: String, context: ColorTokenContext) -> String {
+        if let resourceName = context.resourceName(for: value) {
+            return "$r('\(context.resourcePrefix).\(resourceName)')"
+        }
+        return "'\(escapeString(value))'"
     }
 
     private func fontWeightExpression(_ value: String) -> String {
@@ -355,4 +380,52 @@ public struct ArkUIGenerator: Sendable {
     private func indentation(_ level: Int) -> String {
         String(repeating: "  ", count: level)
     }
+}
+
+private struct ColorTokenContext {
+    var resourcePrefix: String
+    private var colors: [HarmonyColorResource]
+    private var resourceNamesByTokenName: [String: String]
+
+    init(tokens: [DesignColorToken], resourcePrefix: String) {
+        self.resourcePrefix = resourcePrefix
+        var colors: [HarmonyColorResource] = []
+        var resourceNamesByTokenName: [String: String] = [:]
+
+        for token in tokens {
+            colors.append(HarmonyColorResource(name: token.name, value: token.value))
+            resourceNamesByTokenName[token.name] = token.name
+        }
+
+        self.colors = colors
+        self.resourceNamesByTokenName = resourceNamesByTokenName
+    }
+
+    func resourceName(for tokenName: String) -> String? {
+        resourceNamesByTokenName[tokenName]
+    }
+
+    func generatedFile(directory: String) throws -> ArkUIGeneratedFile? {
+        guard !colors.isEmpty else {
+            return nil
+        }
+
+        let payload = HarmonyColorResourceFile(color: colors)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(payload)
+        return ArkUIGeneratedFile(
+            relativePath: "\(directory)/color.json",
+            content: String(decoding: data, as: UTF8.self)
+        )
+    }
+}
+
+private struct HarmonyColorResourceFile: Encodable {
+    var color: [HarmonyColorResource]
+}
+
+private struct HarmonyColorResource: Encodable {
+    var name: String
+    var value: String
 }

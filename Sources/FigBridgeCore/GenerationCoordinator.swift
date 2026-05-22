@@ -394,6 +394,8 @@ enum PromptBuilder {
     4. Every layout.padding (if present) MUST include all four sides: top, right, bottom, left (as numbers, default to 0 if not specified)
     5. Every node must include: id, name, type, children, needsReview, warnings
     6. rootNode.type must be "frame"
+    7. When the local context uses a semantic color token name in style.fill, style.stroke, or style.text.color, keep that exact token name and include the corresponding entry in tokens.colors.
+    8. For image/icon nodes, preserve cached asset.name exactly. asset.localPath MUST be package-relative, like "assets/icon_bot_24.svg"; never output an absolute filesystem path.
 
     Example tokens.colors format:
     "tokens": {
@@ -475,6 +477,7 @@ enum PromptBuilder {
             "FigBridge local Figma context:",
             "- Do not fetch this Figma node again.",
             "- Treat the local DesignIR seed as the primary source of truth when present.",
+            "- The local seed may already resolve Figma semantic colors to tokens.colors and icon/image nodes to cached local library assets.",
         ]
 
         if let previewImagePath = item.previewImagePath {
@@ -499,8 +502,9 @@ enum PromptBuilder {
 
         if !item.resourceItems.isEmpty {
             let resources = item.resourceItems.map { resource in
-                let localPath = resource.localPath ?? ""
-                return "- \(resource.name) [\(resource.kind.rawValue), \(resource.format.rawValue)] \(localPath)"
+                let cachedPath = resource.localPath ?? ""
+                let assetPath = cachedPath.isEmpty ? "" : DesignIRAssetPathNormalizer.packageRelativeAssetPath(fromCachedPath: cachedPath)
+                return "- \(resource.name) [\(resource.kind.rawValue), \(resource.format.rawValue)] asset.localPath=\(assetPath) cachedFile=\(cachedPath)"
             }.joined(separator: "\n")
             lines.append("Cached resources:\n\(resources)")
         }
