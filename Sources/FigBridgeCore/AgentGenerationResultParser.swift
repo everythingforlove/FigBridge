@@ -45,14 +45,12 @@ public struct AgentGenerationResultParser: Sendable {
         guard !trimmed.isEmpty else {
             throw AgentGenerationResultParserError.emptyOutput
         }
-        guard !trimmed.contains("```") else {
-            throw AgentGenerationResultParserError.markdownOutput
-        }
+        let designText = try parseableDesignText(from: trimmed)
 
-        let isLikelyJSON = trimmed.hasPrefix("{") || trimmed.hasPrefix("[")
+        let isLikelyJSON = designText.hasPrefix("{") || designText.hasPrefix("[")
         do {
             return try decodeAndValidate(
-                normalizedDesignIRData(from: Data(trimmed.utf8)),
+                normalizedDesignIRData(from: Data(designText.utf8)),
                 formatLabel: "DesignIR JSON",
                 expectedItem: expectedItem
             )
@@ -63,7 +61,7 @@ public struct AgentGenerationResultParser: Sendable {
 
             let jsonError = parserMessage(from: error, formatLabel: "DesignIR JSON")
             do {
-                var yamlParser = try MinimalYAMLParser(text: trimmed)
+                var yamlParser = try MinimalYAMLParser(text: designText)
                 let yamlData = try yamlParser.jsonData()
                 return try decodeAndValidate(
                     normalizedDesignIRData(from: yamlData),
@@ -75,6 +73,37 @@ public struct AgentGenerationResultParser: Sendable {
                 throw AgentGenerationResultParserError.invalidFormat("\(jsonError); \(yamlError)")
             }
         }
+    }
+
+    private func parseableDesignText(from output: String) throws -> String {
+        guard output.contains("```") else {
+            return output
+        }
+
+        let lines = output.components(separatedBy: .newlines)
+        guard let firstContentIndex = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+              let lastContentIndex = lines.lastIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+              firstContentIndex < lastContentIndex else {
+            throw AgentGenerationResultParserError.markdownOutput
+        }
+
+        let openingFence = lines[firstContentIndex].trimmingCharacters(in: .whitespaces)
+        let closingFence = lines[lastContentIndex].trimmingCharacters(in: .whitespaces)
+        guard openingFence.hasPrefix("```"), closingFence == "```" else {
+            throw AgentGenerationResultParserError.markdownOutput
+        }
+
+        let innerRange = lines.index(after: firstContentIndex)..<lastContentIndex
+        let innerLines = lines[innerRange]
+        guard !innerLines.contains(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("```") }) else {
+            throw AgentGenerationResultParserError.markdownOutput
+        }
+
+        let innerText = innerLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !innerText.isEmpty else {
+            throw AgentGenerationResultParserError.emptyOutput
+        }
+        return innerText
     }
 
     private func decodeAndValidate(

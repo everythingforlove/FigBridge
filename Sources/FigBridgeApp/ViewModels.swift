@@ -454,10 +454,7 @@ final class GenerateViewModel: ObservableObject {
                 shouldFinishAsCancelled = generationSessionController.wasCancelled(sessionID)
                 throw CancellationError()
             }
-            if generationSessionController.wasCancelled(sessionID) {
-                shouldFinishAsCancelled = true
-                throw CancellationError()
-            }
+            let wasCancelled = generationSessionController.wasCancelled(sessionID)
             let latestRunLogsByItemID = runLogsByItemID
             items = persisted.summary.items
             currentBatchID = persisted.summary.id
@@ -478,7 +475,7 @@ final class GenerateViewModel: ObservableObject {
             runLogsByItemID = updatedPersisted.summary.runLogsByItemID
             loadSelectedYAML()
             refreshSelectedRunLog()
-            validationMessage = "生成完成"
+            validationMessage = wasCancelled ? "生成已取消" : "生成完成"
             persistDraftIfNeeded()
         } catch is CancellationError {
             if shouldFinishAsCancelled || generationSessionController.isActive(sessionID) || generationSessionController.wasCancelled(sessionID) {

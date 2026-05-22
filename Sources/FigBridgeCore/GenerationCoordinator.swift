@@ -192,22 +192,30 @@ public struct GenerationCoordinator: Sendable {
                 }
             }
         } catch is CancellationError {
-            resolvedItem.generationStatus = .cancelled
-            resolvedItem.generatedYAMLPath = nil
-            resolvedItem.agentOutputPath = nil
-            resolvedItem.errorMessage = nil
-            resolvedItem.logSummary = "已取消"
+            resolvedItem = recoveredGeneratedItemIfPresent(
+                resolvedItem,
+                batchDirectory: batchDirectory,
+                rawOutputURL: makeRawOutputURL(for: item, batchDirectory: batchDirectory)
+            ) ?? cancelledItem(resolvedItem)
             if let itemEvent {
                 await itemEvent(item.id, .cancelled)
             }
         } catch {
-            resolvedItem.generationStatus = .failed
-            resolvedItem.generatedYAMLPath = nil
-            resolvedItem.agentOutputPath = nil
-            resolvedItem.errorMessage = error.localizedDescription
-            resolvedItem.logSummary = "执行失败"
-            if let itemEvent {
-                await itemEvent(item.id, .failed(message: error.localizedDescription))
+            if let recovered = recoveredGeneratedItemIfPresent(
+                resolvedItem,
+                batchDirectory: batchDirectory,
+                rawOutputURL: makeRawOutputURL(for: item, batchDirectory: batchDirectory)
+            ) {
+                resolvedItem = recovered
+            } else {
+                resolvedItem.generationStatus = .failed
+                resolvedItem.generatedYAMLPath = nil
+                resolvedItem.agentOutputPath = nil
+                resolvedItem.errorMessage = error.localizedDescription
+                resolvedItem.logSummary = "执行失败"
+                if let itemEvent {
+                    await itemEvent(item.id, .failed(message: error.localizedDescription))
+                }
             }
         }
 
@@ -252,19 +260,44 @@ public struct GenerationCoordinator: Sendable {
             }
             try FileManager.default.createDirectory(at: rawOutputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try result.output.write(to: rawOutputURL, atomically: true, encoding: .utf8)
+        } catch is CancellationError {
+            var completed = 0
+            for index in resolvedItems.indices {
+                resolvedItems[index] = recoveredGeneratedItemIfPresent(
+                    resolvedItems[index],
+                    batchDirectory: batchDirectory,
+                    rawOutputURL: rawOutputURL
+                ) ?? cancelledItem(resolvedItems[index])
+                if let itemEvent {
+                    await itemEvent(resolvedItems[index].id, .cancelled)
+                }
+                completed += 1
+                if let progress {
+                    await progress(completed, resolvedItems.count, resolvedItems[index])
+                }
+            }
+            return resolvedItems
         } catch {
             var completed = 0
             for index in resolvedItems.indices {
-                finalizeBatchItem(
-                    &resolvedItems[index],
-                    status: .failed,
-                    errorMessage: error.localizedDescription,
-                    designIRPath: nil,
-                    agentOutputPath: nil,
-                    logSummary: "执行失败"
-                )
-                if let itemEvent {
-                    await itemEvent(resolvedItems[index].id, .failed(message: error.localizedDescription))
+                if let recovered = recoveredGeneratedItemIfPresent(
+                    resolvedItems[index],
+                    batchDirectory: batchDirectory,
+                    rawOutputURL: rawOutputURL
+                ) {
+                    resolvedItems[index] = recovered
+                } else {
+                    finalizeBatchItem(
+                        &resolvedItems[index],
+                        status: .failed,
+                        errorMessage: error.localizedDescription,
+                        designIRPath: nil,
+                        agentOutputPath: nil,
+                        logSummary: "执行失败"
+                    )
+                    if let itemEvent {
+                        await itemEvent(resolvedItems[index].id, .failed(message: error.localizedDescription))
+                    }
                 }
                 completed += 1
                 if let progress {
@@ -349,6 +382,51 @@ public struct GenerationCoordinator: Sendable {
         item.agentOutputPath = agentOutputPath
         item.errorMessage = errorMessage
         item.logSummary = logSummary
+    }
+
+    private func cancelledItem(_ item: FigmaLinkItem) -> FigmaLinkItem {
+        var updated = item
+        updated.generationStatus = .cancelled
+        updated.generatedYAMLPath = nil
+        updated.agentOutputPath = nil
+        updated.errorMessage = nil
+        updated.logSummary = "已取消"
+        return updated
+    }
+
+    private func recoveredGeneratedItemIfPresent(
+        _ item: FigmaLinkItem,
+        batchDirectory: URL,
+        rawOutputURL: URL?
+    ) -> FigmaLinkItem? {
+        let designURL = makeDesignIRURL(for: item, batchDirectory: batchDirectory)
+        guard designFileCanBeLoaded(at: designURL) else {
+            return nil
+        }
+
+        var recovered = item
+        recovered.generatedYAMLPath = designURL.path
+        if let rawOutputURL, FileManager.default.fileExists(atPath: rawOutputURL.path) {
+            recovered.agentOutputPath = rawOutputURL.path
+        } else {
+            let itemRawOutputURL = makeRawOutputURL(for: item, batchDirectory: batchDirectory)
+            if FileManager.default.fileExists(atPath: itemRawOutputURL.path) {
+                recovered.agentOutputPath = itemRawOutputURL.path
+            }
+        }
+        recovered.generationStatus = .success
+        recovered.errorMessage = nil
+        recovered.logSummary = "已恢复 DesignIR"
+        return recovered
+    }
+
+    private func designFileCanBeLoaded(at url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url),
+              !data.isEmpty else {
+            return false
+        }
+        return (try? JSONDecoder().decode(DesignIR.self, from: data)) != nil
     }
 
     private func makeBatchRawOutputURL(for item: FigmaLinkItem, batchDirectory: URL) -> URL {

@@ -184,6 +184,54 @@ struct GenerationCoordinatorTests {
         #expect(await runner.recordedCalls() == ["FILE1|1:2", "FILE1|1:2"])
     }
 
+    @Test func cancellationPreservesExistingDesignIRArtifact() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let batchStore = BatchStore(rootDirectory: sandbox.root)
+        let item = FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2")
+        let existing = try batchStore.createBatch(GenerationBatch(
+            id: "batch-recover-existing-design-ir",
+            createdAt: Date(timeIntervalSince1970: 0),
+            agent: .codex,
+            promptSnapshot: "prompt",
+            sourceInputText: "input",
+            outputDirectory: sandbox.root.path,
+            mode: .sequential,
+            parallelism: 1,
+            callStrategy: .singleForBatch,
+            items: [item]
+        ))
+        let itemDirectory = try #require(existing.itemDirectories.first)
+        let designDirectory = itemDirectory.appendingPathComponent("design-ir", isDirectory: true)
+        let designURL = designDirectory.appendingPathComponent(DesignPackageStore.designFilename)
+        let rawOutputURL = designDirectory.appendingPathComponent("agent-output.txt")
+        try FileManager.default.createDirectory(at: designDirectory, withIntermediateDirectories: true)
+        try makeAgentDesignIRJSON(fileKey: item.fileKey, nodeId: item.nodeId, screenName: "Recovered")
+            .write(to: designURL, atomically: true, encoding: .utf8)
+        try "raw output".write(to: rawOutputURL, atomically: true, encoding: .utf8)
+
+        let coordinator = GenerationCoordinator(batchStore: batchStore, agentRunner: CancellationThrowingRunner())
+        let recovered = try await coordinator.generate(
+            agent: .codex,
+            promptTemplate: "prompt",
+            sourceInputText: "input",
+            outputDirectory: sandbox.root,
+            mode: .sequential,
+            parallelism: 1,
+            callStrategy: .singleForBatch,
+            existingBatchID: existing.summary.id,
+            items: existing.summary.items
+        )
+
+        let recoveredItem = try #require(recovered.summary.items.first)
+        #expect(recoveredItem.generationStatus == .success)
+        #expect(recoveredItem.generatedYAMLPath == designURL.path)
+        #expect(recoveredItem.agentOutputPath == rawOutputURL.path)
+        #expect(recoveredItem.errorMessage == nil)
+        #expect(recoveredItem.logSummary == "已恢复 DesignIR")
+    }
+
     @Test func runsSingleBatchCallAndSplitsOutputsPerItem() async throws {
         let sandbox = try TestSandbox()
         defer { sandbox.cleanup() }
@@ -286,11 +334,14 @@ struct GenerationCoordinatorTests {
             items: items
         )
 
-        #expect(batch.summary.items.allSatisfy { $0.generationStatus == .failed })
-        #expect(batch.summary.items.allSatisfy { $0.generatedYAMLPath == nil })
+        #expect(batch.summary.items[0].generationStatus == .failed)
+        #expect(batch.summary.items[0].generatedYAMLPath == nil)
+        #expect(batch.summary.items[1].generationStatus == .success)
+        #expect(batch.summary.items[1].generatedYAMLPath != nil)
+        #expect(batch.summary.items[2].generationStatus == .failed)
+        #expect(batch.summary.items[2].generatedYAMLPath == nil)
         #expect(batch.summary.items.allSatisfy { $0.agentOutputPath != nil })
         #expect(batch.summary.items[0].errorMessage?.contains("缺少字段") == true)
-        #expect(batch.summary.items[1].errorMessage?.contains("Markdown") == true)
         #expect(batch.summary.items[2].errorMessage?.contains("不是有效") == true)
     }
 
@@ -332,8 +383,8 @@ struct GenerationCoordinatorTests {
 
         #expect(batch.summary.items[0].generationStatus == .success)
         #expect(batch.summary.items[0].generatedYAMLPath != nil)
-        #expect(batch.summary.items[1].generationStatus == .failed)
-        #expect(batch.summary.items[1].errorMessage?.contains("Markdown") == true)
+        #expect(batch.summary.items[1].generationStatus == .success)
+        #expect(batch.summary.items[1].generatedYAMLPath != nil)
         #expect(batch.summary.items[2].generationStatus == .failed)
         #expect(batch.summary.items[2].errorMessage?.contains("缺少字段") == true)
         #expect(batch.summary.items.allSatisfy { $0.agentOutputPath != nil })
@@ -452,6 +503,12 @@ private actor RetryingMockAgentRunner: AgentRunning {
 
     func recordedCalls() -> [String] {
         calls
+    }
+}
+
+private actor CancellationThrowingRunner: AgentRunning {
+    func run(provider: AgentProvider, prompt: String, item: FigmaLinkItem, eventHandler: (@Sendable (AgentRunEvent) async -> Void)? = nil) async throws -> AgentRunResult {
+        throw CancellationError()
     }
 }
 

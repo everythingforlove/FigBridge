@@ -122,9 +122,19 @@ struct AgentGenerationResultParserTests {
         #expect(result.design.rootNode.children.first?.asset?.localPath == "assets/icon_bot_24.svg")
     }
 
-    @Test func rejectsMissingFieldsMarkdownAndMalformedOutput() {
+    @Test func parsesFencedDesignIRAndRejectsMissingFieldsAndMalformedOutput() throws {
         let parser = AgentGenerationResultParser()
         let item = FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2")
+
+        let fencedResult = try parser.parse(
+            """
+            ```json
+            \(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "Fenced"))
+            ```
+            """,
+            expectedItem: item
+        )
+        #expect(fencedResult.design.screenName == "Fenced")
 
         expectParserError(containing: "缺少字段") {
             _ = try parser.parse(#"{"version":"design-ir/v1"}"#, expectedItem: item)
@@ -133,6 +143,7 @@ struct AgentGenerationResultParserTests {
         expectParserError(containing: "Markdown") {
             _ = try parser.parse(
                 """
+                这是结果：
                 ```json
                 \(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2"))
                 ```

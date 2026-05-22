@@ -41,7 +41,10 @@ public final class BatchArchiveStore: Sendable {
     public func loadBatch(at directory: URL) throws -> PersistedBatch {
         let batchURL = directory.appendingPathComponent("batch.json")
         let data = try Data(contentsOf: batchURL)
-        let batch = pathRebaser.makeRuntimeBatch(from: try decoder.decode(GenerationBatch.self, from: data), batchDirectory: directory)
+        let batch = reconcileGeneratedArtifactsIfNeeded(
+            in: pathRebaser.makeRuntimeBatch(from: try decoder.decode(GenerationBatch.self, from: data), batchDirectory: directory),
+            batchDirectory: directory
+        )
         let itemDirectories = batch.items.compactMap { itemDirectory(in: directory, itemID: $0.id) }
         return PersistedBatch(summary: batch, batchDirectory: directory, itemDirectories: itemDirectories)
     }
@@ -296,6 +299,44 @@ public final class BatchArchiveStore: Sendable {
         }
         let prefix = itemID.uuidString.lowercased()
         return entries.first(where: { $0.lastPathComponent.hasPrefix(prefix) })
+    }
+
+    private func reconcileGeneratedArtifactsIfNeeded(in batch: GenerationBatch, batchDirectory: URL) -> GenerationBatch {
+        var reconciled = batch
+        reconciled.items = batch.items.map { item in
+            guard let itemDirectory = itemDirectory(in: batchDirectory, itemID: item.id) else {
+                return item
+            }
+
+            var updated = item
+            let designDirectory = itemDirectory.appendingPathComponent("design-ir", isDirectory: true)
+            let designURL = designDirectory.appendingPathComponent(DesignPackageStore.designFilename)
+            if updated.generatedYAMLPath == nil,
+               designFileCanBeLoaded(at: designURL) {
+                updated.generatedYAMLPath = designURL.path
+                updated.generationStatus = .success
+                updated.errorMessage = nil
+                updated.logSummary = "已恢复 DesignIR"
+            }
+
+            let rawOutputURL = designDirectory.appendingPathComponent("agent-output.txt")
+            if updated.agentOutputPath == nil,
+               FileManager.default.fileExists(atPath: rawOutputURL.path) {
+                updated.agentOutputPath = rawOutputURL.path
+            }
+
+            return updated
+        }
+        return reconciled
+    }
+
+    private func designFileCanBeLoaded(at url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url),
+              !data.isEmpty else {
+            return false
+        }
+        return (try? JSONDecoder().decode(DesignIR.self, from: data)) != nil
     }
 
     private func ensureRootDirectoryExists() throws {
