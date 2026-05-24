@@ -35,6 +35,22 @@ swift run FigBridge
 swift test
 ```
 
+## 质量门禁
+
+本地与 CI 共用同一套检查：
+
+```bash
+./scripts/ci-checks.sh
+```
+
+当前门禁包含：
+
+- 禁止常见生成物或本地缓存进入版本库
+- 校验已跟踪 JSON 文件语法
+- 执行 `git diff --check`
+- 执行 `swift build`
+- 执行 `swift test`
+
 ## 打包 DMG
 
 ```bash

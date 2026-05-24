@@ -71,8 +71,8 @@ public struct ShellClient: Sendable {
 
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
-                let stdinFile = FileHandle(forReadingAtPath: "/dev/null")
-                task.standardInput = stdinFile
+                let stdinPipe = Pipe()
+                task.standardInput = stdinPipe
                 task.standardOutput = stdoutPipe
                 task.standardError = stderrPipe
                 let stdoutCollector = StreamCollector()
@@ -106,7 +106,8 @@ public struct ShellClient: Sendable {
                 task.terminationHandler = { process in
                     stdoutPipe.fileHandleForReading.readabilityHandler = nil
                     stderrPipe.fileHandleForReading.readabilityHandler = nil
-                    try? stdinFile?.close()
+                    try? stdinPipe.fileHandleForWriting.close()
+                    try? stdinPipe.fileHandleForReading.close()
                     let stdoutTail = stdoutPipe.fileHandleForReading.availableData
                     let stderrTail = stderrPipe.fileHandleForReading.availableData
                     stdoutCollector.append(data: stdoutTail)
@@ -137,6 +138,7 @@ public struct ShellClient: Sendable {
 
                 do {
                     try task.run()
+                    try? stdinPipe.fileHandleForWriting.close()
                     if let onEvent {
                         Task {
                             await onEvent(.started(pid: task.processIdentifier))
@@ -153,6 +155,8 @@ public struct ShellClient: Sendable {
                         }
                     }
                 } catch {
+                    try? stdinPipe.fileHandleForWriting.close()
+                    try? stdinPipe.fileHandleForReading.close()
                     resumeBox.resume {
                         continuation.resume(throwing: error)
                     }
