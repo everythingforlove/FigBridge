@@ -29,9 +29,18 @@ public struct ShellClient: Sendable {
     }
 
     public func resolveExecutable(named name: String) -> URL? {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedName.isEmpty else {
+            return nil
+        }
+
+        if normalizedName.hasPrefix("/") {
+            return isExecutableRegularFile(atPath: normalizedName) ? URL(fileURLWithPath: normalizedName) : nil
+        }
+
         for directory in searchDirectories() {
-            let candidate = directory.appendingPathComponent(name)
-            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+            let candidate = directory.appendingPathComponent(normalizedName)
+            if isExecutableRegularFile(atPath: candidate.path) {
                 return candidate
             }
         }
@@ -191,7 +200,17 @@ public struct ShellClient: Sendable {
             for relativePath in homeFallbacks {
                 appendDirectory(homeURL.appendingPathComponent(relativePath, isDirectory: true))
             }
+
+            let codexAppFallbacks = [
+                "Applications/Codex.app/Contents/Resources",
+                "Desktop/Codex.app/Contents/Resources"
+            ]
+            for relativePath in codexAppFallbacks {
+                appendDirectory(homeURL.appendingPathComponent(relativePath, isDirectory: true))
+            }
         }
+
+        appendDirectory(URL(fileURLWithPath: "/Applications/Codex.app/Contents/Resources", isDirectory: true))
 
         let systemFallbacks = [
             "/opt/homebrew/bin",
@@ -206,6 +225,15 @@ public struct ShellClient: Sendable {
         }
 
         return orderedDirectories
+    }
+
+    private func isExecutableRegularFile(atPath path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              !isDirectory.boolValue else {
+            return false
+        }
+        return FileManager.default.isExecutableFile(atPath: path)
     }
 
     private func runtimeEnvironment() -> [String: String] {

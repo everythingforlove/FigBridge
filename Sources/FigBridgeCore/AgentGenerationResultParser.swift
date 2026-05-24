@@ -81,29 +81,56 @@ public struct AgentGenerationResultParser: Sendable {
         }
 
         let lines = output.components(separatedBy: .newlines)
-        guard let firstContentIndex = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
-              let lastContentIndex = lines.lastIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
-              firstContentIndex < lastContentIndex else {
+        var fencedRanges: [Range<Int>] = []
+        var openingFenceIndex: Int?
+
+        for index in lines.indices {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("```") else {
+                continue
+            }
+
+            if let currentOpeningFenceIndex = openingFenceIndex {
+                guard trimmed == "```" else {
+                    throw AgentGenerationResultParserError.markdownOutput
+                }
+                fencedRanges.append(currentOpeningFenceIndex..<index)
+                guard !containsNestedFenceLines(in: lines, openingFenceIndex: currentOpeningFenceIndex, closingFenceIndex: index) else {
+                    throw AgentGenerationResultParserError.markdownOutput
+                }
+                openingFenceIndex = nil
+            } else {
+                openingFenceIndex = index
+            }
+        }
+
+        guard openingFenceIndex == nil else {
+            throw AgentGenerationResultParserError.markdownOutput
+        }
+        guard fencedRanges.count == 1, let fencedRange = fencedRanges.first else {
             throw AgentGenerationResultParserError.markdownOutput
         }
 
-        let openingFence = lines[firstContentIndex].trimmingCharacters(in: .whitespaces)
-        let closingFence = lines[lastContentIndex].trimmingCharacters(in: .whitespaces)
-        guard openingFence.hasPrefix("```"), closingFence == "```" else {
-            throw AgentGenerationResultParserError.markdownOutput
-        }
-
-        let innerRange = lines.index(after: firstContentIndex)..<lastContentIndex
+        let innerRange = lines.index(after: fencedRange.lowerBound)..<fencedRange.upperBound
         let innerLines = lines[innerRange]
-        guard !innerLines.contains(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("```") }) else {
-            throw AgentGenerationResultParserError.markdownOutput
-        }
-
         let innerText = innerLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !innerText.isEmpty else {
             throw AgentGenerationResultParserError.emptyOutput
         }
         return innerText
+    }
+
+    private func containsNestedFenceLines(in lines: [String], openingFenceIndex: Int, closingFenceIndex: Int) -> Bool {
+        guard openingFenceIndex + 1 < closingFenceIndex else {
+            return false
+        }
+
+        for index in lines.index(after: openingFenceIndex)..<closingFenceIndex {
+            if lines[index].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                return true
+            }
+        }
+        return false
     }
 
     private func decodeAndValidate(
@@ -150,21 +177,59 @@ public struct AgentGenerationResultParser: Sendable {
         }
         normalizeTokens(in: &object)
         normalizeNodes(in: &object)
+        if object["warnings"] == nil || object["warnings"] is NSNull {
+            object["warnings"] = [Any]()
+        }
         guard JSONSerialization.isValidJSONObject(object) else {
             return data
         }
         return try JSONSerialization.data(withJSONObject: object)
     }
 
-    /// Ensures all nodes have complete layout.padding with all four sides
+    /// Normalizes recoverable DesignIR node omissions before decoding.
     private func normalizeNodes(in object: inout [String: Any]) {
         guard let rootNode = object["rootNode"] as? [String: Any] else { return }
         var normalizedRoot = rootNode
-        normalizeNodeLayout(&normalizedRoot)
-        normalizeNodeAssetPaths(&normalizedRoot)
+        normalizeNode(&normalizedRoot)
         object["rootNode"] = normalizedRoot
     }
 
+    private func normalizeNode(_ node: inout [String: Any]) {
+        normalizeNodeType(&node)
+        normalizeNodeChildrenAndReviewFields(&node)
+        normalizeNodeLayout(&node)
+        normalizeNodeTextStyle(&node)
+        normalizeNodeAssetPaths(&node)
+
+        if let children = node["children"] as? [[String: Any]] {
+            node["children"] = children.map { child in
+                var mutableChild = child
+                normalizeNode(&mutableChild)
+                return mutableChild
+            }
+        }
+    }
+
+    private func normalizeNodeType(_ node: inout [String: Any]) {
+        guard let rawType = node["type"] as? String else {
+            return
+        }
+        node["type"] = normalizedNodeTypeString(from: rawType)
+    }
+
+    private func normalizeNodeChildrenAndReviewFields(_ node: inout [String: Any]) {
+        if node["children"] == nil || node["children"] is NSNull {
+            node["children"] = [Any]()
+        }
+        if node["needsReview"] == nil || node["needsReview"] is NSNull {
+            node["needsReview"] = false
+        }
+        if node["warnings"] == nil || node["warnings"] is NSNull {
+            node["warnings"] = [Any]()
+        }
+    }
+
+    /// Ensures all nodes have complete layout.padding with all four sides
     private func normalizeNodeLayout(_ node: inout [String: Any]) {
         guard var layout = node["layout"] as? [String: Any],
               layout["padding"] != nil else { return }
@@ -172,7 +237,6 @@ public struct AgentGenerationResultParser: Sendable {
         var padding = layout["padding"]
         if let paddingDict = padding as? [String: Any] {
             var normalized = paddingDict
-            // Ensure all four sides exist with numeric defaults
             normalized["top"] = (normalized["top"] as? NSNumber)?.doubleValue ?? 0.0
             normalized["right"] = (normalized["right"] as? NSNumber)?.doubleValue ?? 0.0
             normalized["bottom"] = (normalized["bottom"] as? NSNumber)?.doubleValue ?? 0.0
@@ -183,15 +247,17 @@ public struct AgentGenerationResultParser: Sendable {
         }
         layout["padding"] = padding
         node["layout"] = layout
+    }
 
-        // Recursively process children
-        if let children = node["children"] as? [[String: Any]] {
-            node["children"] = children.map { child in
-                var mutableChild = child
-                normalizeNodeLayout(&mutableChild)
-                return mutableChild
-            }
+    private func normalizeNodeTextStyle(_ node: inout [String: Any]) {
+        guard var style = node["style"] as? [String: Any] else {
+            return
         }
+        if var text = style["text"] as? [String: Any] {
+            normalizeTextStyleFields(&text)
+            style["text"] = text
+        }
+        node["style"] = style
     }
 
     private func normalizeNodeAssetPaths(_ node: inout [String: Any]) {
@@ -200,14 +266,6 @@ public struct AgentGenerationResultParser: Sendable {
            let normalizedPath = DesignIRAssetPathNormalizer.packageRelativeAssetPath(fromPossiblyUnsafePath: localPath) {
             asset["localPath"] = normalizedPath
             node["asset"] = asset
-        }
-
-        if let children = node["children"] as? [[String: Any]] {
-            node["children"] = children.map { child in
-                var mutableChild = child
-                normalizeNodeAssetPaths(&mutableChild)
-                return mutableChild
-            }
         }
     }
 
@@ -245,7 +303,54 @@ public struct AgentGenerationResultParser: Sendable {
 
         tokens["spacing"] = normalizeNumericTokenMap(tokens["spacing"])
         tokens["radii"] = normalizeNumericTokenMap(tokens["radii"])
+        normalizeTextStyleTokens(&tokens)
         object["tokens"] = tokens
+    }
+
+    private func normalizeTextStyleTokens(_ tokens: inout [String: Any]) {
+        guard let textStyles = tokens["textStyles"] as? [Any] else {
+            return
+        }
+        tokens["textStyles"] = textStyles.map { item in
+            guard var token = item as? [String: Any] else {
+                return item
+            }
+            if var style = token["style"] as? [String: Any] {
+                normalizeTextStyleFields(&style)
+                token["style"] = style
+            }
+            return token
+        }
+    }
+
+    private func normalizeTextStyleFields(_ style: inout [String: Any]) {
+        if let fontWeight = style["fontWeight"] as? NSNumber {
+            style["fontWeight"] = normalizedFontWeightString(from: fontWeight)
+        }
+    }
+
+    private func normalizedFontWeightString(from value: NSNumber) -> String {
+        let doubleValue = value.doubleValue
+        if doubleValue.rounded() == doubleValue {
+            return String(Int(doubleValue))
+        }
+        return String(doubleValue)
+    }
+
+    private func normalizedNodeTypeString(from rawType: String) -> String {
+        let normalized = rawType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "frame", "text", "image", "icon", "button", "list", "input", "unknown":
+            return normalized
+        case "group", "container", "section", "panel", "sheet", "modal", "card", "row", "column", "stack":
+            return "frame"
+        case "label", "paragraph", "heading", "title", "caption":
+            return "text"
+        case "divider", "line", "separator", "shape", "vector", "ellipse", "rectangle", "boolean_operation":
+            return "unknown"
+        default:
+            return "unknown"
+        }
     }
 
     private func normalizeTokenArray(

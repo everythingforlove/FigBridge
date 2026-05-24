@@ -58,6 +58,63 @@ struct AgentServiceTests {
         #expect(agents.first(where: { $0.provider == .codex })?.path == codexPath.path)
     }
 
+    @Test func detectsCodexFromHomeApplicationsBundleWhenPathDoesNotContainIt() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let homeDirectory = sandbox.root.appendingPathComponent("home", isDirectory: true)
+        let resourcesDirectory = homeDirectory.appendingPathComponent("Applications/Codex.app/Contents/Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resourcesDirectory, withIntermediateDirectories: true)
+
+        let codexPath = resourcesDirectory.appendingPathComponent("codex")
+        try makeExecutable(at: codexPath, body: "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"codex app 1.2.3\"\nfi\n")
+
+        let shell = ShellClient(pathLookupDirectories: [], environment: ["HOME": homeDirectory.path, "PATH": "/usr/bin:/bin"])
+        let service = AgentService(shellClient: shell)
+
+        let descriptor = try await service.detect(provider: .codex)
+
+        #expect(descriptor?.path == codexPath.path)
+        #expect(descriptor?.version == "codex app 1.2.3")
+    }
+
+    @Test func detectsCodexFromDesktopBundleWhenPathDoesNotContainIt() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let homeDirectory = sandbox.root.appendingPathComponent("home", isDirectory: true)
+        let resourcesDirectory = homeDirectory.appendingPathComponent("Desktop/Codex.app/Contents/Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resourcesDirectory, withIntermediateDirectories: true)
+
+        let codexPath = resourcesDirectory.appendingPathComponent("codex")
+        try makeExecutable(at: codexPath, body: "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"codex desktop 4.5.6\"\nfi\n")
+
+        let shell = ShellClient(pathLookupDirectories: [], environment: ["HOME": homeDirectory.path, "PATH": "/usr/bin:/bin"])
+        let service = AgentService(shellClient: shell)
+
+        let descriptor = try await service.detect(provider: .codex)
+
+        #expect(descriptor?.path == codexPath.path)
+        #expect(descriptor?.version == "codex desktop 4.5.6")
+    }
+
+    @Test func resolvesAbsoluteExecutablePathsOnlyWhenExecutable() throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let executablePath = sandbox.root.appendingPathComponent("custom-codex")
+        let nonExecutablePath = sandbox.root.appendingPathComponent("not-executable")
+        let missingPath = sandbox.root.appendingPathComponent("missing-codex")
+        try makeExecutable(at: executablePath, body: "#!/bin/sh\necho ok\n")
+        try "#!/bin/sh\necho nope\n".write(to: nonExecutablePath, atomically: true, encoding: .utf8)
+
+        let shell = ShellClient(pathLookupDirectories: [], environment: [:])
+
+        #expect(shell.resolveExecutable(named: executablePath.path)?.path == executablePath.path)
+        #expect(shell.resolveExecutable(named: nonExecutablePath.path) == nil)
+        #expect(shell.resolveExecutable(named: missingPath.path) == nil)
+    }
+
     @Test func runsClaudeAndCodexWithExpectedArguments() async throws {
         let sandbox = try TestSandbox()
         defer { sandbox.cleanup() }

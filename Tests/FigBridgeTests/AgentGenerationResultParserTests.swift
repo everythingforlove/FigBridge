@@ -122,6 +122,165 @@ struct AgentGenerationResultParserTests {
         #expect(result.design.rootNode.children.first?.asset?.localPath == "assets/icon_bot_24.svg")
     }
 
+    @Test func fillsMissingNodeChildrenAndReviewFieldsRecursively() throws {
+        let item = FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2")
+        let output = """
+        {
+          "version": "design-ir/v1",
+          "screenName": "Login",
+          "fileKey": "FILE1",
+          "nodeId": "1:2",
+          "targetPlatform": "harmony-arkui",
+          "viewport": { "width": 360, "height": 640 },
+          "tokens": {
+            "colors": [],
+            "textStyles": [],
+            "spacing": {},
+            "radii": {}
+          },
+          "rootNode": {
+            "id": "1:2",
+            "name": "Login",
+            "type": "frame",
+            "children": [
+              {
+                "id": "2:1",
+                "name": "Container",
+                "type": "frame",
+                "children": [
+                  {
+                    "id": "3:1",
+                    "name": "Label",
+                    "type": "text",
+                    "text": "Hello"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+        """
+
+        let result = try AgentGenerationResultParser().parse(output, expectedItem: item)
+
+        let container = try #require(result.design.rootNode.children.first)
+        let label = try #require(container.children.first)
+        #expect(container.needsReview == false)
+        #expect(container.warnings.isEmpty)
+        #expect(label.children.isEmpty)
+        #expect(label.needsReview == false)
+        #expect(label.warnings.isEmpty)
+        #expect(result.design.warnings.isEmpty)
+    }
+
+    @Test func normalizesNumericFontWeightInTokensAndNodeTextStyles() throws {
+        let item = FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2")
+        let output = """
+        {
+          "version": "design-ir/v1",
+          "screenName": "Login",
+          "fileKey": "FILE1",
+          "nodeId": "1:2",
+          "targetPlatform": "harmony-arkui",
+          "viewport": { "width": 360, "height": 640 },
+          "tokens": {
+            "colors": [],
+            "textStyles": [
+              {
+                "name": "body",
+                "style": {
+                  "fontFamily": "PingFang SC",
+                  "fontSize": 14,
+                  "fontWeight": 400,
+                  "lineHeight": 20,
+                  "color": "#111111"
+                }
+              }
+            ],
+            "spacing": {},
+            "radii": {}
+          },
+          "rootNode": {
+            "id": "1:2",
+            "name": "Login",
+            "type": "frame",
+            "children": [
+              {
+                "id": "2:1",
+                "name": "Label",
+                "type": "text",
+                "text": "Hello",
+                "style": {
+                  "text": {
+                    "fontFamily": "PingFang SC",
+                    "fontSize": 16,
+                    "fontWeight": 500,
+                    "lineHeight": 24,
+                    "color": "#222222"
+                  }
+                }
+              }
+            ]
+          }
+        }
+        """
+
+        let result = try AgentGenerationResultParser().parse(output, expectedItem: item)
+
+        #expect(result.design.tokens.textStyles.first?.style.fontWeight == "400")
+        #expect(result.design.rootNode.children.first?.style?.text?.fontWeight == "500")
+    }
+
+    @Test func normalizesCommonAgentNodeTypeAliases() throws {
+        let item = FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2")
+        let output = """
+        {
+          "version": "design-ir/v1",
+          "screenName": "Login",
+          "fileKey": "FILE1",
+          "nodeId": "1:2",
+          "targetPlatform": "harmony-arkui",
+          "viewport": { "width": 360, "height": 640 },
+          "tokens": {
+            "colors": [],
+            "textStyles": [],
+            "spacing": {},
+            "radii": {}
+          },
+          "rootNode": {
+            "id": "1:2",
+            "name": "Login",
+            "type": "container",
+            "children": [
+              {
+                "id": "2:1",
+                "name": "Divider",
+                "type": "divider"
+              },
+              {
+                "id": "2:2",
+                "name": "Shape",
+                "type": "shape"
+              },
+              {
+                "id": "2:3",
+                "name": "Title",
+                "type": "label",
+                "text": "Hello"
+              }
+            ]
+          }
+        }
+        """
+
+        let result = try AgentGenerationResultParser().parse(output, expectedItem: item)
+
+        #expect(result.design.rootNode.type == .frame)
+        #expect(result.design.rootNode.children[0].type == .unknown)
+        #expect(result.design.rootNode.children[1].type == .unknown)
+        #expect(result.design.rootNode.children[2].type == .text)
+    }
+
     @Test func parsesFencedDesignIRAndRejectsMissingFieldsAndMalformedOutput() throws {
         let parser = AgentGenerationResultParser()
         let item = FigmaLinkItem(rawInputLine: "one", title: "one", url: "https://www.figma.com/design/FILE1/A?node-id=1-2", fileKey: "FILE1", nodeId: "1:2")
@@ -136,6 +295,18 @@ struct AgentGenerationResultParserTests {
         )
         #expect(fencedResult.design.screenName == "Fenced")
 
+        let fencedResultWithPreamble = try parser.parse(
+            """
+            这是结果：
+            ```json
+            \(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "Preamble"))
+            ```
+            如有需要我也可以解释字段含义。
+            """,
+            expectedItem: item
+        )
+        #expect(fencedResultWithPreamble.design.screenName == "Preamble")
+
         expectParserError(containing: "缺少字段") {
             _ = try parser.parse(#"{"version":"design-ir/v1"}"#, expectedItem: item)
         }
@@ -143,9 +314,11 @@ struct AgentGenerationResultParserTests {
         expectParserError(containing: "Markdown") {
             _ = try parser.parse(
                 """
-                这是结果：
                 ```json
                 \(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2"))
+                ```
+                ```json
+                \(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2", screenName: "Duplicate"))
                 ```
                 """,
                 expectedItem: item
