@@ -1,0 +1,23 @@
+{
+  "assetsDirectory": "assets",
+  "checksums": {
+    "assets/hero.png": "0d566894635a0328ba41adf930142ed8e3e3f1c75c9c92a670e97c06b01bf617",
+    "design.json": "df6db60d616ab90422ce1b9716fcaf2c01f8ceea2332cd18f09e1b81b7de0451",
+    "figma-node.json": "e6d3ffb86f17ef471e75a4ee1087f7020f7e49c3e10a4dcdf7e174c1085faf2d",
+    "preview.png": "98004c5cb616b8bdd6cdad7f5811692b609adb2dedf04cc83c265f948607e38e"
+  },
+  "createdAt": "1970-01-01T00:00:00Z",
+  "designFile": "design.json",
+  "figmaNodeFile": "figma-node.json",
+  "packageID": "login-basic",
+  "previewFile": "preview.png",
+  "schemaVersion": "figbridge-design-package/v1",
+  "source": {
+    "exportedAt": "1970-01-01T00:00:00Z",
+    "exporter": "fixture",
+    "figmaURL": "https://www.figma.com/design/FILE123/App?node-id=1-2",
+    "fileKey": "FILE123",
+    "nodeId": "1:2"
+  },
+  "targetPlatform": "harmony-arkui"
+}

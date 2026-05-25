@@ -105,6 +105,54 @@ struct BatchStoreTests {
         #expect(scanned[0].summary.parallelism == 2)
     }
 
+    @Test func loadBatchRestoresGeneratedDesignIRWhenMetadataLostAfterCancellation() throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let store = BatchStore(rootDirectory: sandbox.root)
+        var item = FigmaLinkItem(
+            rawInputLine: "首页",
+            title: "首页",
+            url: "https://www.figma.com/design/FILE123/App?node-id=1-2",
+            fileKey: "FILE123",
+            nodeId: "1:2"
+        )
+        item.generationStatus = .failed
+        item.errorMessage = "The operation couldn’t be completed. (Swift.CancellationError error 1.)"
+        item.logSummary = "执行失败"
+
+        let batch = GenerationBatch(
+            id: "batch-recover-design-ir",
+            createdAt: Date(timeIntervalSince1970: 0),
+            agent: .codex,
+            promptSnapshot: "prompt",
+            sourceInputText: "input",
+            outputDirectory: sandbox.root.path,
+            mode: .sequential,
+            parallelism: 2,
+            callStrategy: .singleForBatch,
+            items: [item]
+        )
+
+        let persisted = try store.createBatch(batch)
+        let itemDirectory = try #require(persisted.itemDirectories.first)
+        let designDirectory = itemDirectory.appendingPathComponent("design-ir", isDirectory: true)
+        let designURL = designDirectory.appendingPathComponent(DesignPackageStore.designFilename)
+        let rawOutputURL = designDirectory.appendingPathComponent("agent-output.txt")
+        try FileManager.default.createDirectory(at: designDirectory, withIntermediateDirectories: true)
+        try makeAgentDesignIRJSON(fileKey: item.fileKey, nodeId: item.nodeId)
+            .write(to: designURL, atomically: true, encoding: .utf8)
+        try "raw output".write(to: rawOutputURL, atomically: true, encoding: .utf8)
+
+        let loaded = try #require(try store.loadBatch(id: batch.id))
+        let loadedItem = try #require(loaded.summary.items.first)
+        #expect(URL(fileURLWithPath: try #require(loadedItem.generatedYAMLPath)).resolvingSymlinksInPath().path == designURL.resolvingSymlinksInPath().path)
+        #expect(URL(fileURLWithPath: try #require(loadedItem.agentOutputPath)).resolvingSymlinksInPath().path == rawOutputURL.resolvingSymlinksInPath().path)
+        #expect(loadedItem.generationStatus == .success)
+        #expect(loadedItem.errorMessage == nil)
+        #expect(loadedItem.logSummary == "已恢复 DesignIR")
+    }
+
     @Test func copiesPromptFromExistingYamlOnly() throws {
         let sandbox = try TestSandbox()
         defer { sandbox.cleanup() }
@@ -120,7 +168,7 @@ struct BatchStoreTests {
         item.generatedYAMLPath = "/tmp/a.yaml"
         let prompt = store.makeCopyPrompt(for: [item])
 
-        #expect(prompt.contains("Implement this design from yaml files."))
+        #expect(prompt.contains("Implement this design from DesignIR files."))
         #expect(prompt.contains("BASE: /tmp"))
         #expect(prompt.contains("- 首页：a.yaml"))
     }

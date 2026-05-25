@@ -1,20 +1,163 @@
 import Foundation
 
-public enum AgentProvider: String, Codable, CaseIterable, Sendable {
-    case claude
-    case codex
-
-    public var id: String {
-        rawValue
-    }
+public enum AgentProviderKind: String, Codable, CaseIterable, Sendable {
+    case claudeCLI
+    case codexCLI
+    case openAICompatibleHTTP
 
     public var displayName: String {
         switch self {
-        case .claude:
-            "Claude"
-        case .codex:
-            "Codex"
+        case .claudeCLI:
+            "Claude CLI"
+        case .codexCLI:
+            "Codex CLI"
+        case .openAICompatibleHTTP:
+            "OpenAI-compatible HTTP"
         }
+    }
+}
+
+public struct CLIProviderConfig: Codable, Equatable, Sendable {
+    public var executableName: String
+
+    public init(executableName: String) {
+        self.executableName = executableName
+    }
+}
+
+public struct OpenAICompatibleHTTPProviderConfig: Codable, Equatable, Sendable {
+    public var baseURL: String
+    public var apiKey: String
+    public var model: String
+    public var timeout: TimeInterval
+    public var streaming: Bool
+
+    public init(
+        baseURL: String = "",
+        apiKey: String = "",
+        model: String = "",
+        timeout: TimeInterval = 300,
+        streaming: Bool = false
+    ) {
+        self.baseURL = baseURL
+        self.apiKey = apiKey
+        self.model = model
+        self.timeout = timeout
+        self.streaming = streaming
+    }
+
+    public var isConfigured: Bool {
+        !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+public struct AgentProvider: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var kind: AgentProviderKind
+    public var displayNameOverride: String?
+    public var cli: CLIProviderConfig?
+    public var openAICompatibleHTTP: OpenAICompatibleHTTPProviderConfig?
+
+    public init(
+        id: String,
+        kind: AgentProviderKind,
+        displayNameOverride: String? = nil,
+        cli: CLIProviderConfig? = nil,
+        openAICompatibleHTTP: OpenAICompatibleHTTPProviderConfig? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.displayNameOverride = displayNameOverride
+        self.cli = cli
+        self.openAICompatibleHTTP = openAICompatibleHTTP
+    }
+
+    public static let claude = AgentProvider(
+        id: "claude",
+        kind: .claudeCLI,
+        displayNameOverride: "Claude",
+        cli: CLIProviderConfig(executableName: "claude")
+    )
+
+    public static let codex = AgentProvider(
+        id: "codex",
+        kind: .codexCLI,
+        displayNameOverride: "Codex",
+        cli: CLIProviderConfig(executableName: "codex")
+    )
+
+    public static let defaultOpenAICompatibleHTTP = AgentProvider(
+        id: "openai-compatible-http",
+        kind: .openAICompatibleHTTP,
+        displayNameOverride: "OpenAI-compatible HTTP",
+        openAICompatibleHTTP: OpenAICompatibleHTTPProviderConfig()
+    )
+
+    public static let allCases: [AgentProvider] = [.claude, .codex]
+
+    public var rawValue: String {
+        switch kind {
+        case .claudeCLI, .codexCLI:
+            cli?.executableName ?? id
+        case .openAICompatibleHTTP:
+            id
+        }
+    }
+
+    public var displayName: String {
+        displayNameOverride ?? kind.displayName
+    }
+
+    public var modelName: String? {
+        openAICompatibleHTTP?.model.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    public var requestTargetDescription: String {
+        switch kind {
+        case .claudeCLI, .codexCLI:
+            rawValue
+        case .openAICompatibleHTTP:
+            openAICompatibleHTTP?.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+    }
+
+    public init(from decoder: any Decoder) throws {
+        if let container = try? decoder.singleValueContainer(),
+           let legacyValue = try? container.decode(String.self) {
+            switch legacyValue {
+            case "claude", "claudeCLI":
+                self = .claude
+            case "codex", "codexCLI":
+                self = .codex
+            case "openAICompatibleHTTP", "openai-compatible-http":
+                self = .defaultOpenAICompatibleHTTP
+            default:
+                self = AgentProvider(id: legacyValue, kind: .openAICompatibleHTTP, displayNameOverride: legacyValue, openAICompatibleHTTP: OpenAICompatibleHTTPProviderConfig())
+            }
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        kind = try container.decode(AgentProviderKind.self, forKey: .kind)
+        displayNameOverride = try container.decodeIfPresent(String.self, forKey: .displayNameOverride)
+        cli = try container.decodeIfPresent(CLIProviderConfig.self, forKey: .cli)
+        openAICompatibleHTTP = try container.decodeIfPresent(OpenAICompatibleHTTPProviderConfig.self, forKey: .openAICompatibleHTTP)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case displayNameOverride
+        case cli
+        case openAICompatibleHTTP
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 
@@ -75,6 +218,7 @@ public enum AgentRunLogStatus: String, Codable, Sendable {
 }
 
 public enum AgentRunEvent: Equatable, Sendable {
+    case metadata(providerKind: AgentProviderKind, model: String?, requestSummary: String)
     case started(executablePath: String, arguments: [String], isSharedLog: Bool)
     case stdout(String)
     case stderr(String)
@@ -85,6 +229,7 @@ public enum AgentRunEvent: Equatable, Sendable {
 
 public struct AppSettings: Codable, Equatable, Sendable {
     public var selectedAgentID: String?
+    public var providerConfigurations: [AgentProvider]
     public var promptTemplate: String
     public var outputDirectoryPath: String?
     public var figmaToken: String
@@ -95,6 +240,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case selectedAgentID
+        case providerConfigurations
         case promptTemplate
         case outputDirectoryPath
         case figmaToken
@@ -106,6 +252,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public init(
         selectedAgentID: String? = nil,
+        providerConfigurations: [AgentProvider] = AgentProvider.allCases + [.defaultOpenAICompatibleHTTP],
         promptTemplate: String,
         outputDirectoryPath: String? = nil,
         figmaToken: String,
@@ -115,6 +262,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         defaultAgentCallStrategy: AgentCallStrategy = .singleForBatch
     ) {
         self.selectedAgentID = selectedAgentID
+        self.providerConfigurations = providerConfigurations
         self.promptTemplate = promptTemplate
         self.outputDirectoryPath = outputDirectoryPath
         self.figmaToken = figmaToken
@@ -124,7 +272,16 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.defaultAgentCallStrategy = defaultAgentCallStrategy
     }
 
-    public static let defaultPrompt = """
+    public static let legacyFigmaMCPDefaultPrompt = """
+    Generate a strict DesignIR JSON or YAML object for this Figma node.
+    Include layout, typography, colors, spacing, assets, and visible interaction notes in the DesignIR fields.
+    You must call figma mcp to retrieve Figma data.
+    If calling figma mcp fails, stop immediately and report the failure.
+    Do not use fallback or alternative methods.
+    Return DesignIR only. Do not include Markdown, code fences, prose, or extra keys outside the DesignIR schema.
+    """
+
+    public static let legacyYAMLFigmaMCPDefaultPrompt = """
     Generate a clean YAML description for this Figma node.
     Include layout, typography, colors, spacing, assets, and interaction notes when visible.
     You must call figma mcp to retrieve Figma data.
@@ -132,6 +289,28 @@ public struct AppSettings: Codable, Equatable, Sendable {
     Do not use fallback or alternative methods.
     Return YAML only.
     """
+
+    public static let defaultPrompt = """
+    Generate a strict DesignIR JSON or YAML object for this Figma node.
+    Use the FigBridge-provided local Figma context in the prompt as the source of truth.
+    Do not call Figma MCP, browser tools, or external Figma fallback methods.
+    Include layout, typography, colors, spacing, cached assets, and visible interaction notes in the DesignIR fields.
+    Return DesignIR only. Do not include Markdown, code fences, prose, or extra keys outside the DesignIR schema.
+    """
+
+    public static func migratingLegacyPromptIfNeeded(_ prompt: String) -> String {
+        let normalizedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let legacyPrompts = [
+            legacyFigmaMCPDefaultPrompt,
+            legacyYAMLFigmaMCPDefaultPrompt
+        ]
+        for legacyPrompt in legacyPrompts {
+            if normalizedPrompt == legacyPrompt.trimmingCharacters(in: .whitespacesAndNewlines) {
+                return defaultPrompt
+            }
+        }
+        return prompt
+    }
 
     public static let defaultValue = AppSettings(
         promptTemplate: AppSettings.defaultPrompt,
@@ -145,6 +324,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         selectedAgentID = try container.decodeIfPresent(String.self, forKey: .selectedAgentID)
+        providerConfigurations = try container.decodeIfPresent([AgentProvider].self, forKey: .providerConfigurations) ?? AgentProvider.allCases + [.defaultOpenAICompatibleHTTP]
         promptTemplate = try container.decode(String.self, forKey: .promptTemplate)
         outputDirectoryPath = try container.decodeIfPresent(String.self, forKey: .outputDirectoryPath)
         figmaToken = try container.decode(String.self, forKey: .figmaToken)
@@ -219,6 +399,8 @@ public struct FigmaLinkItem: Codable, Equatable, Identifiable, Sendable {
     public var nodeName: String?
     public var agentOutputPath: String?
     public var logSummary: String?
+    public var figmaNodeJSONPath: String?
+    public var figmaDerivedDesignIRPath: String?
 
     public init(
         id: UUID = UUID(),
@@ -236,7 +418,9 @@ public struct FigmaLinkItem: Codable, Equatable, Identifiable, Sendable {
         errorMessage: String? = nil,
         nodeName: String? = nil,
         agentOutputPath: String? = nil,
-        logSummary: String? = nil
+        logSummary: String? = nil,
+        figmaNodeJSONPath: String? = nil,
+        figmaDerivedDesignIRPath: String? = nil
     ) {
         self.id = id
         self.rawInputLine = rawInputLine
@@ -254,6 +438,8 @@ public struct FigmaLinkItem: Codable, Equatable, Identifiable, Sendable {
         self.nodeName = nodeName
         self.agentOutputPath = agentOutputPath
         self.logSummary = logSummary
+        self.figmaNodeJSONPath = figmaNodeJSONPath
+        self.figmaDerivedDesignIRPath = figmaDerivedDesignIRPath
     }
 }
 
@@ -262,6 +448,10 @@ public struct GenerationRunLog: Codable, Equatable, Sendable, Identifiable {
     public var runID: String { id }
     public var isShared: Bool
     public var provider: AgentProvider
+    public var providerKind: AgentProviderKind
+    public var model: String?
+    public var requestSummary: String?
+    public var errorMessage: String?
     public var executablePath: String?
     public var arguments: [String]
     public var startedAt: Date?
@@ -271,6 +461,24 @@ public struct GenerationRunLog: Codable, Equatable, Sendable, Identifiable {
     public var stdout: String
     public var stderr: String
 
+    enum CodingKeys: String, CodingKey {
+        case id
+        case isShared
+        case provider
+        case providerKind
+        case model
+        case requestSummary
+        case errorMessage
+        case executablePath
+        case arguments
+        case startedAt
+        case endedAt
+        case exitCode
+        case status
+        case stdout
+        case stderr
+    }
+
     public var combinedConsoleText: String {
         stdout + stderr
     }
@@ -279,6 +487,10 @@ public struct GenerationRunLog: Codable, Equatable, Sendable, Identifiable {
         id: String,
         isShared: Bool,
         provider: AgentProvider,
+        providerKind: AgentProviderKind? = nil,
+        model: String? = nil,
+        requestSummary: String? = nil,
+        errorMessage: String? = nil,
         executablePath: String? = nil,
         arguments: [String] = [],
         startedAt: Date? = nil,
@@ -291,6 +503,10 @@ public struct GenerationRunLog: Codable, Equatable, Sendable, Identifiable {
         self.id = id
         self.isShared = isShared
         self.provider = provider
+        self.providerKind = providerKind ?? provider.kind
+        self.model = model
+        self.requestSummary = requestSummary
+        self.errorMessage = errorMessage
         self.executablePath = executablePath
         self.arguments = arguments
         self.startedAt = startedAt
@@ -299,6 +515,25 @@ public struct GenerationRunLog: Codable, Equatable, Sendable, Identifiable {
         self.status = status
         self.stdout = stdout
         self.stderr = stderr
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        isShared = try container.decode(Bool.self, forKey: .isShared)
+        provider = try container.decode(AgentProvider.self, forKey: .provider)
+        providerKind = try container.decodeIfPresent(AgentProviderKind.self, forKey: .providerKind) ?? provider.kind
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        requestSummary = try container.decodeIfPresent(String.self, forKey: .requestSummary)
+        errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+        executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)
+        arguments = try container.decodeIfPresent([String].self, forKey: .arguments) ?? []
+        startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt)
+        endedAt = try container.decodeIfPresent(Date.self, forKey: .endedAt)
+        exitCode = try container.decodeIfPresent(Int32.self, forKey: .exitCode)
+        status = try container.decodeIfPresent(AgentRunLogStatus.self, forKey: .status) ?? .running
+        stdout = try container.decodeIfPresent(String.self, forKey: .stdout) ?? ""
+        stderr = try container.decodeIfPresent(String.self, forKey: .stderr) ?? ""
     }
 }
 
@@ -417,10 +652,14 @@ public struct FigmaNodePayload: Sendable, Equatable {
     public var name: String
     public var previewURL: String?
     public var resources: [FigmaResourceItem]
+    public var document: FigmaDocumentNode?
+    public var documentJSON: Data?
 
-    public init(name: String, previewURL: String?, resources: [FigmaResourceItem]) {
+    public init(name: String, previewURL: String?, resources: [FigmaResourceItem], document: FigmaDocumentNode? = nil, documentJSON: Data? = nil) {
         self.name = name
         self.previewURL = previewURL
         self.resources = resources
+        self.document = document
+        self.documentJSON = documentJSON
     }
 }

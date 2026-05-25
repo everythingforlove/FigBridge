@@ -1,0 +1,95 @@
+{
+  "fileKey": "FILE123",
+  "nodeId": "1:2",
+  "rootNode": {
+    "bounds": {
+      "height": 640,
+      "width": 360,
+      "x": 0,
+      "y": 0
+    },
+    "children": [
+      {
+        "asset": {
+          "format": "png",
+          "kind": "image",
+          "localPath": "assets/hero.png",
+          "name": "hero"
+        },
+        "bounds": {
+          "height": 160,
+          "width": 320,
+          "x": 0,
+          "y": 0
+        },
+        "children": [],
+        "confidence": 1,
+        "id": "2:1",
+        "name": "Hero",
+        "needsReview": false,
+        "type": "image",
+        "warnings": []
+      },
+      {
+        "bounds": {
+          "height": 32,
+          "width": 272,
+          "x": 24,
+          "y": 184
+        },
+        "children": [],
+        "confidence": 0.9,
+        "id": "2:2",
+        "name": "Title",
+        "needsReview": false,
+        "style": {
+          "text": {
+            "color": "#111111",
+            "fontSize": 24,
+            "fontWeight": "600"
+          }
+        },
+        "text": "Welcome",
+        "type": "text",
+        "warnings": []
+      }
+    ],
+    "confidence": 0.95,
+    "id": "1:2",
+    "layout": {
+      "mode": "vertical",
+      "padding": {
+        "bottom": 24,
+        "left": 24,
+        "right": 24,
+        "top": 24
+      },
+      "spacing": 16
+    },
+    "name": "Login",
+    "needsReview": false,
+    "type": "frame",
+    "warnings": []
+  },
+  "screenName": "Login",
+  "targetPlatform": "harmony-arkui",
+  "tokens": {
+    "colors": [
+      {
+        "name": "text.primary",
+        "value": "#111111"
+      }
+    ],
+    "radii": {},
+    "spacing": {
+      "screen.padding": 24
+    },
+    "textStyles": []
+  },
+  "version": "design-ir/v1",
+  "viewport": {
+    "height": 640,
+    "width": 360
+  },
+  "warnings": []
+}

@@ -29,9 +29,18 @@ public struct ShellClient: Sendable {
     }
 
     public func resolveExecutable(named name: String) -> URL? {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedName.isEmpty else {
+            return nil
+        }
+
+        if normalizedName.hasPrefix("/") {
+            return isExecutableRegularFile(atPath: normalizedName) ? URL(fileURLWithPath: normalizedName) : nil
+        }
+
         for directory in searchDirectories() {
-            let candidate = directory.appendingPathComponent(name)
-            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+            let candidate = directory.appendingPathComponent(normalizedName)
+            if isExecutableRegularFile(atPath: candidate.path) {
                 return candidate
             }
         }
@@ -60,10 +69,10 @@ public struct ShellClient: Sendable {
                 task.arguments = arguments
                 task.environment = runtimeEnvironment()
 
-                let stdinHandle = FileHandle(forReadingAtPath: "/dev/null")
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
-                task.standardInput = stdinHandle
+                let stdinPipe = Pipe()
+                task.standardInput = stdinPipe
                 task.standardOutput = stdoutPipe
                 task.standardError = stderrPipe
                 let stdoutCollector = StreamCollector()
@@ -94,42 +103,45 @@ public struct ShellClient: Sendable {
                     }
                 }
 
+                task.terminationHandler = { process in
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    try? stdinPipe.fileHandleForWriting.close()
+                    try? stdinPipe.fileHandleForReading.close()
+                    let stdoutTail = stdoutPipe.fileHandleForReading.availableData
+                    let stderrTail = stderrPipe.fileHandleForReading.availableData
+                    stdoutCollector.append(data: stdoutTail)
+                    stderrCollector.append(data: stderrTail)
+                    if let text = String(data: stdoutTail, encoding: .utf8), !text.isEmpty, let onEvent {
+                        Task {
+                            await onEvent(.stdout(text))
+                        }
+                    }
+                    if let text = String(data: stderrTail, encoding: .utf8), !text.isEmpty, let onEvent {
+                        Task {
+                            await onEvent(.stderr(text))
+                        }
+                    }
+                    if let onEvent {
+                        Task {
+                            await onEvent(.finished(status: process.terminationStatus))
+                        }
+                    }
+                    resumeBox.resume {
+                        if cancellationState.isCancelled {
+                            continuation.resume(throwing: CancellationError())
+                        } else {
+                            continuation.resume(returning: ShellResult(status: process.terminationStatus, stdout: stdoutCollector.fullText(), stderr: stderrCollector.fullText()))
+                        }
+                    }
+                }
+
                 do {
                     try task.run()
+                    try? stdinPipe.fileHandleForWriting.close()
                     if let onEvent {
                         Task {
                             await onEvent(.started(pid: task.processIdentifier))
-                        }
-                    }
-                    task.terminationHandler = { process in
-                        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                        stderrPipe.fileHandleForReading.readabilityHandler = nil
-                        try? stdinHandle?.close()
-                        let stdoutTail = stdoutPipe.fileHandleForReading.availableData
-                        let stderrTail = stderrPipe.fileHandleForReading.availableData
-                        stdoutCollector.append(data: stdoutTail)
-                        stderrCollector.append(data: stderrTail)
-                        if let text = String(data: stdoutTail, encoding: .utf8), !text.isEmpty, let onEvent {
-                            Task {
-                                await onEvent(.stdout(text))
-                            }
-                        }
-                        if let text = String(data: stderrTail, encoding: .utf8), !text.isEmpty, let onEvent {
-                            Task {
-                                await onEvent(.stderr(text))
-                            }
-                        }
-                        if let onEvent {
-                            Task {
-                                await onEvent(.finished(status: process.terminationStatus))
-                            }
-                        }
-                        resumeBox.resume {
-                            if cancellationState.isCancelled {
-                                continuation.resume(throwing: CancellationError())
-                            } else {
-                                continuation.resume(returning: ShellResult(status: process.terminationStatus, stdout: stdoutCollector.fullText(), stderr: stderrCollector.fullText()))
-                            }
                         }
                     }
                     if let timeout, timeout > 0 {
@@ -143,6 +155,8 @@ public struct ShellClient: Sendable {
                         }
                     }
                 } catch {
+                    try? stdinPipe.fileHandleForWriting.close()
+                    try? stdinPipe.fileHandleForReading.close()
                     resumeBox.resume {
                         continuation.resume(throwing: error)
                     }
@@ -190,7 +204,17 @@ public struct ShellClient: Sendable {
             for relativePath in homeFallbacks {
                 appendDirectory(homeURL.appendingPathComponent(relativePath, isDirectory: true))
             }
+
+            let codexAppFallbacks = [
+                "Applications/Codex.app/Contents/Resources",
+                "Desktop/Codex.app/Contents/Resources"
+            ]
+            for relativePath in codexAppFallbacks {
+                appendDirectory(homeURL.appendingPathComponent(relativePath, isDirectory: true))
+            }
         }
+
+        appendDirectory(URL(fileURLWithPath: "/Applications/Codex.app/Contents/Resources", isDirectory: true))
 
         let systemFallbacks = [
             "/opt/homebrew/bin",
@@ -205,6 +229,15 @@ public struct ShellClient: Sendable {
         }
 
         return orderedDirectories
+    }
+
+    private func isExecutableRegularFile(atPath path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              !isDirectory.boolValue else {
+            return false
+        }
+        return FileManager.default.isExecutableFile(atPath: path)
     }
 
     private func runtimeEnvironment() -> [String: String] {

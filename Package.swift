@@ -1,4 +1,4 @@
-// swift-tools-version: 6.3
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
@@ -33,7 +33,8 @@ let package = Package(
         ),
         .testTarget(
             name: "FigBridgeTests",
-            dependencies: ["FigBridgeCore", "FigBridgeApp"]
+            dependencies: ["FigBridgeCore", "FigBridgeApp"],
+            exclude: ["Fixtures"]
         ),
     ],
     swiftLanguageModes: [.v6]

@@ -1,0 +1,100 @@
+{
+  "id": "1:1",
+  "name": "Checkout Screen",
+  "type": "FRAME",
+  "absoluteBoundingBox": {
+    "x": 0,
+    "y": 0,
+    "width": 390,
+    "height": 844
+  },
+  "layoutMode": "VERTICAL",
+  "paddingLeft": 24,
+  "paddingRight": 24,
+  "paddingTop": 32,
+  "paddingBottom": 32,
+  "itemSpacing": 16,
+  "fills": [
+    {
+      "type": "SOLID",
+      "color": { "r": 1, "g": 1, "b": 1, "a": 1 }
+    }
+  ],
+  "children": [
+    {
+      "id": "2:1",
+      "name": "Hero Image",
+      "type": "RECTANGLE",
+      "absoluteBoundingBox": {
+        "x": 24,
+        "y": 32,
+        "width": 342,
+        "height": 180
+      },
+      "fills": [
+        {
+          "type": "IMAGE",
+          "imageRef": "hero-ref"
+        }
+      ]
+    },
+    {
+      "id": "2:2",
+      "name": "Header Row",
+      "type": "FRAME",
+      "absoluteBoundingBox": {
+        "x": 24,
+        "y": 228,
+        "width": 342,
+        "height": 48
+      },
+      "layoutMode": "HORIZONTAL",
+      "paddingLeft": 12,
+      "paddingRight": 12,
+      "paddingTop": 8,
+      "paddingBottom": 8,
+      "itemSpacing": 10,
+      "fills": [
+        {
+          "type": "SOLID",
+          "color": { "r": 0.94, "g": 0.97, "b": 1, "a": 1 }
+        }
+      ],
+      "strokes": [
+        {
+          "type": "SOLID",
+          "color": { "r": 0.8, "g": 0.86, "b": 0.94, "a": 1 }
+        }
+      ],
+      "strokeWeight": 1,
+      "cornerRadius": 8,
+      "children": [
+        {
+          "id": "3:1",
+          "name": "Title",
+          "type": "TEXT",
+          "absoluteBoundingBox": {
+            "x": 36,
+            "y": 240,
+            "width": 180,
+            "height": 24
+          },
+          "characters": "Review order",
+          "style": {
+            "fontFamily": "Inter",
+            "fontWeight": 600,
+            "fontSize": 20,
+            "lineHeightPx": 24,
+            "textAlignHorizontal": "LEFT"
+          },
+          "fills": [
+            {
+              "type": "SOLID",
+              "color": { "r": 0.07, "g": 0.08, "b": 0.1, "a": 1 }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

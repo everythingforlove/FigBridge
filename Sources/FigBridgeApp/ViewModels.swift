@@ -10,6 +10,10 @@ final class SettingsViewModel: ObservableObject {
             guard oldValue != settings else {
                 return
             }
+            availableAgents = selectableAgentDescriptors(
+                detectedAgents: availableAgents.filter { $0.provider.kind != .openAICompatibleHTTP },
+                settings: settings
+            )
             scheduleAutosave()
         }
     }
@@ -47,8 +51,10 @@ final class SettingsViewModel: ObservableObject {
         }
         bootstrapped = true
         do {
-            availableAgents = try await agentService.detectAvailableAgents()
-            settings = try settingsStore.loadValidatingSelectedAgent(availableAgents: availableAgents.map(\.provider))
+            let detectedAgents = try await agentService.detectAvailableAgents()
+            let loadedSettings = try settingsStore.loadValidatingSelectedAgent(availableAgents: selectableProviders(from: detectedAgents, settings: try settingsStore.load()))
+            settings = loadedSettings
+            availableAgents = selectableAgentDescriptors(detectedAgents: detectedAgents, settings: loadedSettings)
             hasLoadedPersistedSettings = true
         } catch {
             message = error.localizedDescription
@@ -58,8 +64,9 @@ final class SettingsViewModel: ObservableObject {
 
     func refreshAgents() async {
         do {
-            availableAgents = try await agentService.detectAvailableAgents()
-            settings = try settingsStore.loadValidatingSelectedAgent(availableAgents: availableAgents.map(\.provider))
+            let detectedAgents = try await agentService.detectAvailableAgents()
+            settings = try settingsStore.loadValidatingSelectedAgent(availableAgents: selectableProviders(from: detectedAgents, settings: settings))
+            availableAgents = selectableAgentDescriptors(detectedAgents: detectedAgents, settings: settings)
             hasLoadedPersistedSettings = true
             message = ""
             isError = false
@@ -126,8 +133,36 @@ final class SettingsViewModel: ObservableObject {
         persistSettings(showSuccessMessage: false)
     }
 
+    func provider(for id: String?) -> AgentProvider? {
+        guard let id else {
+            return nil
+        }
+        if let descriptor = availableAgents.first(where: { $0.id == id }) {
+            return descriptor.provider
+        }
+        return settings.providerConfigurations.first(where: { $0.id == id })
+    }
+
     func markPersistedSettingsLoadedForTesting() {
         hasLoadedPersistedSettings = true
+    }
+
+    private func selectableProviders(from detectedAgents: [AgentDescriptor], settings: AppSettings) -> [AgentProvider] {
+        selectableAgentDescriptors(detectedAgents: detectedAgents, settings: settings).map(\.provider)
+    }
+
+    private func selectableAgentDescriptors(detectedAgents: [AgentDescriptor], settings: AppSettings) -> [AgentDescriptor] {
+        var descriptors = detectedAgents
+        let detectedIDs = Set(detectedAgents.map(\.id))
+        for provider in settings.providerConfigurations where !detectedIDs.contains(provider.id) {
+            guard provider.kind == .openAICompatibleHTTP,
+                  let config = provider.openAICompatibleHTTP,
+                  config.isConfigured else {
+                continue
+            }
+            descriptors.append(AgentDescriptor(provider: provider, path: config.baseURL, version: config.model))
+        }
+        return descriptors
     }
 }
 
@@ -205,24 +240,21 @@ final class GenerateViewModel: ObservableObject {
     private let batchStore: BatchStore
     private let generationCoordinator: GenerationCoordinator
     private let figmaService: FigmaService
-    private let draftStore: GenerateWorkspaceDraftStore
+    private let draftCoordinator: WorkspaceDraftCoordinator
+    private let generationSessionController = GenerationSessionController()
+    private let resourceLoadController = ResourceLoadController()
+    private let runLogReducer = RunLogReducer()
     private let parser = FigmaLinkParser()
     private var bootstrapped = false
-    private var generationTask: Task<PersistedBatch, Error>?
-    private var isRestoringWorkspace = false
     private var isSynchronizingOutputDirectory = false
-    private var resourceLoadTasks: [UUID: Task<Void, Never>] = [:]
     private var runLogsByItemID: [UUID: GenerationRunLog] = [:]
-    private var sharedRunLogIDByBatchKey: [String: String] = [:]
-    private var activeGenerationSessionID: UUID?
-    private var cancelledGenerationSessionIDs: Set<UUID> = []
 
     init(settingsViewModel: SettingsViewModel, batchStore: BatchStore, generationCoordinator: GenerationCoordinator, figmaService: FigmaService, draftStore: GenerateWorkspaceDraftStore) {
         self.settingsViewModel = settingsViewModel
         self.batchStore = batchStore
         self.generationCoordinator = generationCoordinator
         self.figmaService = figmaService
-        self.draftStore = draftStore
+        draftCoordinator = WorkspaceDraftCoordinator(draftStore: draftStore)
     }
 
     var selectedItem: FigmaLinkItem? {
@@ -282,12 +314,12 @@ final class GenerateViewModel: ObservableObject {
         bootstrapped = true
         await settingsViewModel.bootstrap()
         availableAgents = settingsViewModel.availableAgents
-        isRestoringWorkspace = true
+        draftCoordinator.beginRestoring()
         applyDefaultWorkspaceSettings()
-        if let draft = draftStore.load() {
+        if let draft = draftCoordinator.load() {
             applyWorkspaceDraft(draft)
         }
-        isRestoringWorkspace = false
+        draftCoordinator.endRestoring()
         preloadResourcesForAllItemsIfNeeded()
     }
 
@@ -319,12 +351,11 @@ final class GenerateViewModel: ObservableObject {
     func startNewBatch() {
         cancelGeneration()
         isGenerating = false
-        generationTask = nil
-        activeGenerationSessionID = nil
-        cancelAllResourceLoads()
+        generationSessionController.clear()
+        resourceLoadController.cancelAll()
         currentBatchID = nil
         currentBatchDirectory = nil
-        isRestoringWorkspace = true
+        draftCoordinator.beginRestoring()
         applyDefaultWorkspaceSettings()
         inputText = ""
         items = []
@@ -335,9 +366,10 @@ final class GenerateViewModel: ObservableObject {
         completedCount = 0
         selectedYAMLText = nil
         runLogsByItemID.removeAll()
+        runLogReducer.reset()
         selectedRunLog = nil
         selectedRunLogText = ""
-        isRestoringWorkspace = false
+        draftCoordinator.endRestoring()
         persistDraft(force: true)
     }
 
@@ -346,15 +378,14 @@ final class GenerateViewModel: ObservableObject {
             validationMessage = "请先完成 agent、prompt 和链接校验"
             return
         }
-        guard let selectedAgentID,
-              let provider = AgentProvider.allCases.first(where: { $0.id == selectedAgentID }) else {
+        guard let provider = settingsViewModel.provider(for: selectedAgentID) else {
             validationMessage = "未选择 agent"
             return
         }
 
-        let sessionID = UUID()
-        activeGenerationSessionID = sessionID
-        cancelledGenerationSessionIDs.remove(sessionID)
+        await prepareFigmaContextForPendingItems()
+
+        let sessionID = generationSessionController.beginSession()
         isGenerating = true
         completedCount = 0
         let pendingItemIDs = Set(pendingItems.map(\.id))
@@ -385,7 +416,7 @@ final class GenerateViewModel: ObservableObject {
                 itemStarted: { [weak self] item in
                     await MainActor.run {
                         guard let self,
-                              self.isGenerationSessionActive(sessionID),
+                              self.generationSessionController.isActive(sessionID),
                               let index = self.items.firstIndex(where: { $0.id == item.id }) else {
                             return
                         }
@@ -394,7 +425,7 @@ final class GenerateViewModel: ObservableObject {
                 },
                 progress: { [weak self] completed, total, item in
                     await MainActor.run {
-                        guard let self, self.isGenerationSessionActive(sessionID) else {
+                        guard let self, self.generationSessionController.isActive(sessionID) else {
                             return
                         }
                         self.completedCount = completed
@@ -406,7 +437,7 @@ final class GenerateViewModel: ObservableObject {
                 },
                 itemEvent: { [weak self] itemID, event in
                     await MainActor.run {
-                        guard let self, self.isGenerationSessionActive(sessionID) else {
+                        guard let self, self.generationSessionController.isActive(sessionID) else {
                             return
                         }
                         self.applyRunEvent(event, for: itemID, provider: provider)
@@ -414,19 +445,16 @@ final class GenerateViewModel: ObservableObject {
                 }
             )
         }
-        generationTask = task
+        generationSessionController.setTask(task)
         var shouldFinishAsCancelled = false
 
         do {
             let persisted = try await task.value
-            guard isGenerationSessionActive(sessionID) else {
-                shouldFinishAsCancelled = cancelledGenerationSessionIDs.contains(sessionID)
+            guard generationSessionController.isActive(sessionID) else {
+                shouldFinishAsCancelled = generationSessionController.wasCancelled(sessionID)
                 throw CancellationError()
             }
-            if cancelledGenerationSessionIDs.contains(sessionID) {
-                shouldFinishAsCancelled = true
-                throw CancellationError()
-            }
+            let wasCancelled = generationSessionController.wasCancelled(sessionID)
             let latestRunLogsByItemID = runLogsByItemID
             items = persisted.summary.items
             currentBatchID = persisted.summary.id
@@ -447,37 +475,28 @@ final class GenerateViewModel: ObservableObject {
             runLogsByItemID = updatedPersisted.summary.runLogsByItemID
             loadSelectedYAML()
             refreshSelectedRunLog()
-            validationMessage = "生成完成"
+            validationMessage = wasCancelled ? "生成已取消" : "生成完成"
             persistDraftIfNeeded()
         } catch is CancellationError {
-            if shouldFinishAsCancelled || isGenerationSessionActive(sessionID) || cancelledGenerationSessionIDs.contains(sessionID) {
+            if shouldFinishAsCancelled || generationSessionController.isActive(sessionID) || generationSessionController.wasCancelled(sessionID) {
                 validationMessage = "生成已取消"
             }
         } catch {
-            if cancelledGenerationSessionIDs.contains(sessionID) {
+            if generationSessionController.wasCancelled(sessionID) {
                 validationMessage = "生成已取消"
-            } else if isGenerationSessionActive(sessionID) {
+            } else if generationSessionController.isActive(sessionID) {
                 validationMessage = error.localizedDescription
             }
         }
 
-        if activeGenerationSessionID == sessionID {
+        if generationSessionController.isActive(sessionID) {
             isGenerating = false
-            generationTask = nil
-            activeGenerationSessionID = nil
         }
-        cancelledGenerationSessionIDs.remove(sessionID)
+        generationSessionController.finishIfActive(sessionID)
     }
 
     func cancelGeneration() {
-        if let activeGenerationSessionID {
-            cancelledGenerationSessionIDs.insert(activeGenerationSessionID)
-        }
-        generationTask?.cancel()
-    }
-
-    private func isGenerationSessionActive(_ sessionID: UUID) -> Bool {
-        activeGenerationSessionID == sessionID
+        generationSessionController.cancel()
     }
 
     func refreshAgents() async {
@@ -496,7 +515,7 @@ final class GenerateViewModel: ObservableObject {
         guard let index = items.firstIndex(where: { $0.id == id }) else {
             return
         }
-        cancelResourceLoad(for: id)
+        resourceLoadController.cancel(for: id)
         let removedItem = items.remove(at: index)
 
         if let currentBatchID {
@@ -528,6 +547,25 @@ final class GenerateViewModel: ObservableObject {
     func preloadResourcesForAllItemsIfNeeded() {
         for item in items {
             scheduleResourceLoad(for: item.id, force: false)
+        }
+    }
+
+    private func prepareFigmaContextForPendingItems() async {
+        guard !isTokenMissing else {
+            return
+        }
+        let itemIDs = pendingItems.map(\.id)
+        guard !itemIDs.isEmpty else {
+            return
+        }
+        progressText = "正在准备 Figma 本地上下文"
+        for itemID in itemIDs {
+            guard let item = items.first(where: { $0.id == itemID }),
+                  item.figmaDerivedDesignIRPath == nil else {
+                continue
+            }
+            resourceLoadController.cancel(for: itemID)
+            await loadResources(for: itemID)
         }
     }
 
@@ -663,8 +701,8 @@ final class GenerateViewModel: ObservableObject {
     }
 
     func loadBatchIntoWorkspace(_ persisted: PersistedBatch) {
-        cancelAllResourceLoads()
-        isRestoringWorkspace = true
+        resourceLoadController.cancelAll()
+        draftCoordinator.beginRestoring()
         selectedAgentID = persisted.summary.agent.id
         promptTemplate = persisted.summary.promptSnapshot
         mode = persisted.summary.mode
@@ -685,7 +723,7 @@ final class GenerateViewModel: ObservableObject {
         selectedRunLog = nil
         selectedRunLogText = ""
         itemRename.cancel()
-        isRestoringWorkspace = false
+        draftCoordinator.endRestoring()
         loadSelectedYAML()
         persistDraftIfNeeded()
         preloadResourcesForAllItemsIfNeeded()
@@ -727,45 +765,14 @@ final class GenerateViewModel: ObservableObject {
 
     private func applyRunEvent(_ event: AgentRunEvent, for itemID: UUID, provider: AgentProvider) {
         let batchKey = currentBatchID ?? "workspace"
-        let existingLog = runLogsByItemID[itemID]
-        var log = existingLog ?? GenerationRunLog(id: UUID().uuidString.lowercased(), isShared: false, provider: provider)
-        switch event {
-        case .started(let executablePath, let arguments, let isSharedLog):
-            if isSharedLog {
-                let sharedID = sharedRunLogIDByBatchKey[batchKey] ?? log.id
-                sharedRunLogIDByBatchKey[batchKey] = sharedID
-                if let sharedLog = runLogsByItemID.values.first(where: { $0.id == sharedID }) {
-                    log = sharedLog
-                } else {
-                    log = GenerationRunLog(id: sharedID, isShared: true, provider: provider)
-                }
-            }
-            log.isShared = isSharedLog
-            log.executablePath = executablePath
-            log.arguments = arguments
-            log.startedAt = log.startedAt ?? Date()
-            log.status = .running
-        case .stdout(let text):
-            log.stdout += text
-        case .stderr(let text):
-            log.stderr += text
-        case .finished(let exitCode):
-            log.exitCode = exitCode
-            log.endedAt = Date()
-            log.status = exitCode == 0 ? .finished : .failed
-        case .failed:
-            log.endedAt = Date()
-            log.status = .failed
-        case .cancelled:
-            log.endedAt = Date()
-            log.status = .cancelled
-        }
-        runLogsByItemID[itemID] = log
-        if log.isShared {
-            for otherItemID in pendingItems.map(\.id) {
-                runLogsByItemID[otherItemID] = log
-            }
-        }
+        let log = runLogReducer.apply(
+            event,
+            for: itemID,
+            provider: provider,
+            batchKey: batchKey,
+            pendingItemIDs: pendingItems.map(\.id),
+            runLogsByItemID: &runLogsByItemID
+        )
         if selectedItemID == itemID {
             selectedRunLog = log
             selectedRunLogText = log.combinedConsoleText
@@ -796,30 +803,37 @@ final class GenerateViewModel: ObservableObject {
         if let draftBatchID = draft.currentBatchID,
            let persisted = try? batchStore.loadBatch(id: draftBatchID) {
             runLogsByItemID = persisted.summary.runLogsByItemID
+            runLogReducer.reset()
         } else {
             runLogsByItemID.removeAll()
+            runLogReducer.reset()
         }
         loadSelectedYAML()
     }
 
     private func persistDraftIfNeeded() {
-        guard !isRestoringWorkspace else {
-            return
+        do {
+            try draftCoordinator.persistIfNeeded(
+                currentBatchID: currentBatchID,
+                items: items,
+                inputText: inputText,
+                draft: makeWorkspaceDraft()
+            )
+        } catch {
+            validationMessage = error.localizedDescription
         }
-        let hasMeaningfulWorkspaceState = currentBatchID != nil
-            || !items.isEmpty
-            || !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        guard hasMeaningfulWorkspaceState else {
-            return
-        }
-        persistDraft(force: false)
     }
 
     private func persistDraft(force: Bool) {
-        guard !isRestoringWorkspace || force else {
-            return
+        do {
+            try draftCoordinator.persist(makeWorkspaceDraft(), force: force)
+        } catch {
+            validationMessage = error.localizedDescription
         }
-        let draft = GenerateWorkspaceDraft(
+    }
+
+    private func makeWorkspaceDraft() -> GenerateWorkspaceDraft {
+        GenerateWorkspaceDraft(
             selectedAgentID: selectedAgentID,
             promptTemplate: promptTemplate,
             outputDirectoryPath: outputDirectoryPath,
@@ -832,51 +846,27 @@ final class GenerateViewModel: ObservableObject {
             currentBatchID: currentBatchID,
             currentBatchDirectory: currentBatchDirectory
         )
-        do {
-            try draftStore.save(draft)
-        } catch {
-            validationMessage = error.localizedDescription
-        }
     }
 
     private func persistSelectedAgentToSettingsIfNeeded() {
-        guard !isRestoringWorkspace else {
+        guard !draftCoordinator.isRestoringWorkspace else {
             return
         }
         settingsViewModel.updateSelectedAgent(selectedAgentID)
     }
 
     private func scheduleResourceLoad(for itemID: UUID, force: Bool) {
-        if force {
-            cancelResourceLoad(for: itemID)
-        } else if resourceLoadTasks[itemID] != nil {
-            return
-        }
-
-        guard let index = items.firstIndex(where: { $0.id == itemID }) else {
-            return
-        }
-        let item = items[index]
-        if !force {
-            if item.previewStatus == .success || item.resourceStatus == .success {
-                return
-            }
-            if item.previewStatus == .loading || item.resourceStatus == .loading {
-                return
-            }
-        }
-
-        let task = Task { [weak self] in
+        let item = items.first(where: { $0.id == itemID })
+        resourceLoadController.schedule(for: itemID, force: force, item: item) { [weak self] itemID in
             guard let self else {
                 return
             }
             await self.loadResources(for: itemID)
         }
-        resourceLoadTasks[itemID] = task
     }
 
     private func loadResources(for itemID: UUID) async {
-        defer { resourceLoadTasks[itemID] = nil }
+        defer { resourceLoadController.complete(for: itemID) }
         guard !Task.isCancelled else {
             return
         }
@@ -929,18 +919,6 @@ final class GenerateViewModel: ObservableObject {
         }
     }
 
-    private func cancelResourceLoad(for itemID: UUID) {
-        resourceLoadTasks[itemID]?.cancel()
-        resourceLoadTasks[itemID] = nil
-    }
-
-    private func cancelAllResourceLoads() {
-        for task in resourceLoadTasks.values {
-            task.cancel()
-        }
-        resourceLoadTasks.removeAll()
-    }
-
     private func resolvedOutputDirectoryForGeneration() -> URL {
         if let currentBatchID {
             return batchStore.exportsDirectory(forBatchID: currentBatchID)
@@ -977,6 +955,46 @@ final class GenerateViewModel: ObservableObject {
     }
 }
 
+struct DesignIRTreeItem: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let badge: String?
+    let isNeedsReview: Bool
+    let children: [DesignIRTreeItem]?
+
+    init(node: DesignNode, path: String = "root") {
+        id = "\(path)/\(node.id)"
+        title = node.name
+        var details = [node.type.rawValue]
+        if let bounds = node.bounds {
+            details.append("\(Int(bounds.width))x\(Int(bounds.height))")
+        }
+        if let confidence = node.confidence {
+            details.append("confidence \(Int(confidence * 100))%")
+        }
+        subtitle = details.joined(separator: " · ")
+        badge = node.warnings.isEmpty ? nil : "\(node.warnings.count) warning"
+        isNeedsReview = node.needsReview
+        let childItems = node.children.map { child in
+            DesignIRTreeItem(node: child, path: "\(path)/\(node.id)")
+        }
+        children = childItems.isEmpty ? nil : childItems
+    }
+}
+
+struct DesignIssueItem: Identifiable, Equatable {
+    enum Severity: String {
+        case warning = "Warning"
+        case needsReview = "Needs Review"
+    }
+
+    let id: String
+    let severity: Severity
+    let nodePath: String
+    let message: String
+}
+
 @MainActor
 final class ViewerViewModel: ObservableObject {
     @Published var batches: [PersistedBatch] = []
@@ -1003,18 +1021,33 @@ final class ViewerViewModel: ObservableObject {
     @Published var message: String = ""
     @Published var batchRename = RenameState<String>()
     @Published var itemRename = RenameState<UUID>()
+    @Published var importedDesignPackage: PersistedDesignPackage?
+    @Published var designPackageJSONText: String?
+    @Published var harmonyProjectPath: String = ""
+    @Published var harmonyPageName: String = ""
+    @Published var harmonyOverwriteExistingFiles: Bool = true
+    @Published var harmonyCreateTargetDirectory: Bool = true
+    @Published var isGeneratingHarmonyProject: Bool = false
+    @Published var harmonyReportText: String = ""
+    @Published var harmonyReportPath: String?
 
     private let batchStore: BatchStore
+    private let designPackageStore: DesignPackageStore
+    private let harmonyProjectGenerator: HarmonyProjectGenerator
     private let continueEditing: (PersistedBatch) -> Void
     private let batchRenamed: (_ oldID: String, _ oldDirectory: URL, _ renamed: PersistedBatch) -> Void
     private var isSynchronizingSelection = false
 
     init(
         batchStore: BatchStore,
+        designPackageStore: DesignPackageStore? = nil,
+        harmonyProjectGenerator: HarmonyProjectGenerator = HarmonyProjectGenerator(),
         continueEditing: @escaping (PersistedBatch) -> Void = { _ in },
         batchRenamed: @escaping (_ oldID: String, _ oldDirectory: URL, _ renamed: PersistedBatch) -> Void = { _, _, _ in }
     ) {
         self.batchStore = batchStore
+        self.designPackageStore = designPackageStore ?? DesignPackageStore(rootDirectory: batchStore.rootDirectory.appendingPathComponent("DesignPackages", isDirectory: true))
+        self.harmonyProjectGenerator = harmonyProjectGenerator
         self.continueEditing = continueEditing
         self.batchRenamed = batchRenamed
     }
@@ -1045,6 +1078,43 @@ final class ViewerViewModel: ObservableObject {
             return nil
         }
         return batch.batchDirectory.appendingPathComponent(BatchStore.exportsDirectoryName, isDirectory: true)
+    }
+
+    var importedDesignPackagePreviewURL: URL? {
+        guard let package = importedDesignPackage,
+              let previewFile = package.manifest.previewFile else {
+            return nil
+        }
+        return package.packageDirectory.appendingPathComponent(previewFile)
+    }
+
+    var designTreeItems: [DesignIRTreeItem] {
+        guard let design = importedDesignPackage?.design else {
+            return []
+        }
+        return [DesignIRTreeItem(node: design.rootNode, path: design.screenName)]
+    }
+
+    var designIssues: [DesignIssueItem] {
+        guard let design = importedDesignPackage?.design else {
+            return []
+        }
+        var issues = design.warnings.enumerated().map { index, warning in
+            DesignIssueItem(
+                id: "design-warning-\(index)",
+                severity: .warning,
+                nodePath: design.screenName,
+                message: warning
+            )
+        }
+        issues.append(contentsOf: collectDesignIssues(from: design.rootNode, path: design.screenName))
+        return issues
+    }
+
+    var canGenerateHarmonyProject: Bool {
+        importedDesignPackage != nil
+        && !harmonyProjectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !isGeneratingHarmonyProject
     }
 
     func reload() {
@@ -1106,6 +1176,94 @@ final class ViewerViewModel: ObservableObject {
         } catch {
             message = error.localizedDescription
         }
+    }
+
+    func importDesignPackageDirectoryUsingPanel() {
+        guard let directoryURL = DesktopSupport.chooseDirectory() else {
+            return
+        }
+        importDesignPackageDirectory(from: directoryURL)
+    }
+
+    func importDesignPackageZipUsingPanel() {
+        guard let zipURL = DesktopSupport.chooseZipArchive() else {
+            return
+        }
+        do {
+            let package = try designPackageStore.importPackageArchive(from: zipURL)
+            applyImportedDesignPackage(package)
+            message = "已导入设计包 \(package.manifest.packageID)"
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    func importDesignPackageDirectory(from directoryURL: URL) {
+        do {
+            let package = try designPackageStore.importPackageDirectory(from: directoryURL)
+            applyImportedDesignPackage(package)
+            message = "已导入设计包 \(package.manifest.packageID)"
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    func selectHarmonyProjectDirectoryUsingPanel() {
+        guard let directoryURL = DesktopSupport.chooseDirectory(canCreateDirectories: true) else {
+            return
+        }
+        harmonyProjectPath = directoryURL.path
+    }
+
+    func generateHarmonyProject() {
+        guard let package = importedDesignPackage else {
+            message = "请先导入设计包"
+            return
+        }
+        let trimmedProjectPath = harmonyProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedProjectPath.isEmpty else {
+            message = "请选择 Harmony 项目目录"
+            return
+        }
+
+        isGeneratingHarmonyProject = true
+        defer { isGeneratingHarmonyProject = false }
+
+        let pageName = harmonyPageName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let options = HarmonyProjectGenerationOptions(
+            arkUIOptions: ArkUIGenerationOptions(pageName: pageName.isEmpty ? nil : pageName),
+            overwriteExistingFiles: harmonyOverwriteExistingFiles,
+            createTargetDirectory: harmonyCreateTargetDirectory
+        )
+        do {
+            let result = try harmonyProjectGenerator.generate(
+                package: package,
+                targetProjectDirectory: URL(fileURLWithPath: trimmedProjectPath, isDirectory: true),
+                options: options
+            )
+            harmonyReportText = result.report.markdown
+            harmonyReportPath = result.reportFile.path
+            message = "Harmony 生成完成：\(result.generatedFiles.count) 个页面，\(result.copiedResources.count) 个资源"
+        } catch {
+            harmonyReportText = ""
+            harmonyReportPath = nil
+            message = error.localizedDescription
+        }
+    }
+
+    func openHarmonyProjectInFinder() {
+        let trimmedProjectPath = harmonyProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedProjectPath.isEmpty else {
+            return
+        }
+        DesktopSupport.openInFinder(URL(fileURLWithPath: trimmedProjectPath, isDirectory: true))
+    }
+
+    func openHarmonyReport() {
+        guard let harmonyReportPath else {
+            return
+        }
+        DesktopSupport.openFile(URL(fileURLWithPath: harmonyReportPath))
     }
 
     func openSelectedBatchInFinder() {
@@ -1354,5 +1512,43 @@ final class ViewerViewModel: ObservableObject {
         }
 
         loadSelectedYAML()
+    }
+
+    private func applyImportedDesignPackage(_ package: PersistedDesignPackage) {
+        importedDesignPackage = package
+        harmonyPageName = package.design.screenName
+        harmonyReportText = ""
+        harmonyReportPath = nil
+        let designURL = package.packageDirectory.appendingPathComponent(package.manifest.designFile)
+        designPackageJSONText = try? String(contentsOf: designURL, encoding: .utf8)
+    }
+
+    private func collectDesignIssues(from node: DesignNode, path: String) -> [DesignIssueItem] {
+        let nodePath = "\(path) / \(node.name)"
+        var issues: [DesignIssueItem] = []
+        if node.needsReview {
+            issues.append(
+                DesignIssueItem(
+                    id: "\(node.id)-needs-review",
+                    severity: .needsReview,
+                    nodePath: nodePath,
+                    message: "需要人工复核"
+                )
+            )
+        }
+        issues.append(
+            contentsOf: node.warnings.enumerated().map { index, warning in
+                DesignIssueItem(
+                    id: "\(node.id)-warning-\(index)",
+                    severity: .warning,
+                    nodePath: nodePath,
+                    message: warning
+                )
+            }
+        )
+        for child in node.children {
+            issues.append(contentsOf: collectDesignIssues(from: child, path: nodePath))
+        }
+        return issues
     }
 }

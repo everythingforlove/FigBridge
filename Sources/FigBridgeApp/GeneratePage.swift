@@ -22,7 +22,7 @@ struct GeneratePage: View {
             case .agent:
                 "1. agent 说明"
             case .figmaMCP:
-                "2. figma mcp 说明"
+                "2. Figma 数据通道说明"
             case .figmaToken:
                 "3. figma token 设置说明（结合预览和资源）"
             case .runtime:
@@ -230,7 +230,7 @@ struct GeneratePage: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Picker("", selection: $expandedSection) {
                             Text("运行日志").tag(DetailSection.runLog)
-                            Text("YAML").tag(DetailSection.yaml)
+                            Text("DesignIR").tag(DetailSection.yaml)
                         }
                         .pickerStyle(.segmented)
                         Group {
@@ -246,6 +246,24 @@ struct GeneratePage: View {
                                             VStack(alignment: .leading, spacing: 4) {
                                                 Text("状态: \(runLog.status.rawValue)")
                                                     .font(.caption)
+                                                Text("Provider: \(runLog.providerKind.rawValue)")
+                                                    .font(.caption2)
+                                                if let model = runLog.model, !model.isEmpty {
+                                                    Text("Model: \(model)")
+                                                        .font(.caption2)
+                                                        .textSelection(.enabled)
+                                                }
+                                                if let requestSummary = runLog.requestSummary, !requestSummary.isEmpty {
+                                                    Text("请求: \(requestSummary)")
+                                                        .font(.caption2)
+                                                        .textSelection(.enabled)
+                                                }
+                                                if let errorMessage = runLog.errorMessage, !errorMessage.isEmpty {
+                                                    Text("错误: \(errorMessage)")
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.red)
+                                                        .textSelection(.enabled)
+                                                }
                                                 if let executablePath = runLog.executablePath {
                                                     Text("执行文件: \(executablePath)")
                                                         .font(.caption2)
@@ -297,7 +315,7 @@ struct GeneratePage: View {
                                         }
                                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                                     } else {
-                                        Text("未找到 YAML")
+                                        Text("未找到 DesignIR")
                                             .foregroundStyle(.secondary)
                                     }
                                 }
@@ -399,7 +417,8 @@ struct GeneratePage: View {
             """
         case .figmaMCP:
             """
-            这里的 figma mcp 可以理解为应用访问 Figma 数据与资源的通道：会基于链接中的 fileKey/nodeId 拉取节点信息、预览图与资源地址，再缓存到本地批次。
+            这里的 Figma 数据通道由 FigBridge 应用自己负责：会基于链接中的 fileKey/nodeId 拉取节点信息、预览图与资源地址，再缓存成本地上下文。
+            生成时 Agent 会读取 FigBridge 已准备好的本地上下文，不需要依赖 Claude/Codex 环境里的 Figma MCP。
             选中条目后会触发懒加载，右侧“详情”会显示预览状态、资源状态和具体资源列表。
             """
         case .figmaToken:
@@ -413,8 +432,8 @@ struct GeneratePage: View {
             运行链路：
             1) 在工作台输入多行信息并添加，应用会解析 Figma design 链接并按 fileKey + nodeId 去重。
             2) 选中条目时拉取节点预览与资源元数据。
-            3) 点击“生成”后由协调器按当前模式和策略调用 Agent 生成 YAML。
-            4) 结果写入当前批次目录（含批次元数据、YAML 与相关导出内容），可在“查看”页继续管理。
+            3) 点击“生成”后由协调器按当前模式和策略调用 Agent 生成 DesignIR。
+            4) 结果写入当前批次目录（含批次元数据、DesignIR 与相关导出内容），可在“查看”页继续管理。
             """
         case .modeAndStrategy:
             """
@@ -481,7 +500,7 @@ struct GeneratePage: View {
                             }
                         }
                         if showsGeneratedState {
-                            Text("YAML 已生成")
+                            Text("DesignIR 已生成")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }

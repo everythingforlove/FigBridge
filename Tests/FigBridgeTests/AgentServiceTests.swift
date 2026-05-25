@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import FigBridgeCore
 
+
 struct AgentServiceTests {
     @Test func detectsAvailableAgentsAndReadsVersion() async throws {
         let fileManager = FileManager.default
@@ -55,6 +56,63 @@ struct AgentServiceTests {
         #expect(agents.count == 2)
         #expect(agents.first(where: { $0.provider == .claude })?.path == claudePath.path)
         #expect(agents.first(where: { $0.provider == .codex })?.path == codexPath.path)
+    }
+
+    @Test func detectsCodexFromHomeApplicationsBundleWhenPathDoesNotContainIt() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let homeDirectory = sandbox.root.appendingPathComponent("home", isDirectory: true)
+        let resourcesDirectory = homeDirectory.appendingPathComponent("Applications/Codex.app/Contents/Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resourcesDirectory, withIntermediateDirectories: true)
+
+        let codexPath = resourcesDirectory.appendingPathComponent("codex")
+        try makeExecutable(at: codexPath, body: "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"codex app 1.2.3\"\nfi\n")
+
+        let shell = ShellClient(pathLookupDirectories: [], environment: ["HOME": homeDirectory.path, "PATH": "/usr/bin:/bin"])
+        let service = AgentService(shellClient: shell)
+
+        let descriptor = try await service.detect(provider: .codex)
+
+        #expect(descriptor?.path == codexPath.path)
+        #expect(descriptor?.version == "codex app 1.2.3")
+    }
+
+    @Test func detectsCodexFromDesktopBundleWhenPathDoesNotContainIt() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let homeDirectory = sandbox.root.appendingPathComponent("home", isDirectory: true)
+        let resourcesDirectory = homeDirectory.appendingPathComponent("Desktop/Codex.app/Contents/Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resourcesDirectory, withIntermediateDirectories: true)
+
+        let codexPath = resourcesDirectory.appendingPathComponent("codex")
+        try makeExecutable(at: codexPath, body: "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"codex desktop 4.5.6\"\nfi\n")
+
+        let shell = ShellClient(pathLookupDirectories: [], environment: ["HOME": homeDirectory.path, "PATH": "/usr/bin:/bin"])
+        let service = AgentService(shellClient: shell)
+
+        let descriptor = try await service.detect(provider: .codex)
+
+        #expect(descriptor?.path == codexPath.path)
+        #expect(descriptor?.version == "codex desktop 4.5.6")
+    }
+
+    @Test func resolvesAbsoluteExecutablePathsOnlyWhenExecutable() throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.cleanup() }
+
+        let executablePath = sandbox.root.appendingPathComponent("custom-codex")
+        let nonExecutablePath = sandbox.root.appendingPathComponent("not-executable")
+        let missingPath = sandbox.root.appendingPathComponent("missing-codex")
+        try makeExecutable(at: executablePath, body: "#!/bin/sh\necho ok\n")
+        try "#!/bin/sh\necho nope\n".write(to: nonExecutablePath, atomically: true, encoding: .utf8)
+
+        let shell = ShellClient(pathLookupDirectories: [], environment: [:])
+
+        #expect(shell.resolveExecutable(named: executablePath.path)?.path == executablePath.path)
+        #expect(shell.resolveExecutable(named: nonExecutablePath.path) == nil)
+        #expect(shell.resolveExecutable(named: missingPath.path) == nil)
     }
 
     @Test func runsClaudeAndCodexWithExpectedArguments() async throws {
@@ -115,6 +173,52 @@ struct AgentServiceTests {
         let output = try await service.run(provider: .claude, prompt: "hello with node")
 
         #expect(output == "hello with node")
+    }
+
+    @Test func runsOpenAICompatibleHTTPProviderWithMockTransport() async throws {
+        let transport = MockAgentHTTPTransport(responseBody: """
+        {
+          "choices": [
+            {
+              "message": {
+                "role": "assistant",
+                "content": "\(makeAgentDesignIRJSON(fileKey: "FILE1", nodeId: "1:2").replacingOccurrences(of: "\n", with: "\\n").replacingOccurrences(of: "\"", with: "\\\""))"
+              }
+            }
+          ]
+        }
+        """)
+        let provider = AgentProvider(
+            id: "mock-http",
+            kind: .openAICompatibleHTTP,
+            displayNameOverride: "Mock HTTP",
+            openAICompatibleHTTP: OpenAICompatibleHTTPProviderConfig(
+                baseURL: "https://mock.example/v1",
+                apiKey: "test-key",
+                model: "mock-model",
+                timeout: 42,
+                streaming: false
+            )
+        )
+        let service = AgentService(httpTransport: transport)
+        let recorder = AgentRunEventRecorder()
+
+        let output = try await service.runDetailed(provider: provider, prompt: "hello http") { event in
+            await recorder.append(event)
+        }
+
+        let request = try #require(transport.recordedRequest)
+        let body = String(data: request.httpBody ?? Data(), encoding: .utf8) ?? ""
+        let events = await recorder.events()
+        #expect(request.url?.absoluteString == "https://mock.example/v1/chat/completions")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        #expect(body.contains("\"model\":\"mock-model\""))
+        #expect(body.contains("hello http"))
+        #expect(output.providerKind == .openAICompatibleHTTP)
+        #expect(output.model == "mock-model")
+        #expect(output.requestSummary.contains("promptChars=10"))
+        #expect(events.contains { if case .metadata(.openAICompatibleHTTP, "mock-model", let summary) = $0 { return summary.contains("mock-model") } else { return false } })
+        #expect(output.output.contains("\"fileKey\": \"FILE1\""))
     }
 
     @Test func streamsShellOutputEventsBeforeCompletion() async throws {
@@ -208,6 +312,42 @@ struct AgentServiceTests {
         #expect(result.status == 0)
         #expect(result.stdout.contains("done"))
         #expect(elapsed < timeout)
+    }
+}
+
+private actor AgentRunEventRecorder {
+    private var values: [AgentRunEvent] = []
+
+    func append(_ event: AgentRunEvent) {
+        values.append(event)
+    }
+
+    func events() -> [AgentRunEvent] {
+        values
+    }
+}
+
+private final class MockAgentHTTPTransport: AgentHTTPTransport, @unchecked Sendable {
+    private let responseBody: String
+    private(set) var recordedRequest: URLRequest?
+
+    init(responseBody: String) {
+        self.responseBody = responseBody
+    }
+
+    func data(for request: URLRequest, timeout: TimeInterval) async throws -> (Data, HTTPURLResponse) {
+        recordedRequest = request
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        return (Data(responseBody.utf8), response)
+    }
+
+    func bytes(for request: URLRequest, timeout: TimeInterval) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        fatalError("Streaming is not used by this mock")
     }
 }
 

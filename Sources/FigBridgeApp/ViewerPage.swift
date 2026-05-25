@@ -220,7 +220,7 @@ struct ViewerPage: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Picker("", selection: $expandedSection) {
                             Text("运行日志").tag(DetailSection.runLog)
-                            Text("YAML").tag(DetailSection.yaml)
+                            Text("DesignIR").tag(DetailSection.yaml)
                         }
                         .pickerStyle(.segmented)
                         Group {
@@ -236,6 +236,24 @@ struct ViewerPage: View {
                                             VStack(alignment: .leading, spacing: 4) {
                                                 Text("状态: \(runLog.status.rawValue)")
                                                     .font(.caption)
+                                                Text("Provider: \(runLog.providerKind.rawValue)")
+                                                    .font(.caption2)
+                                                if let model = runLog.model, !model.isEmpty {
+                                                    Text("Model: \(model)")
+                                                        .font(.caption2)
+                                                        .textSelection(.enabled)
+                                                }
+                                                if let requestSummary = runLog.requestSummary, !requestSummary.isEmpty {
+                                                    Text("请求: \(requestSummary)")
+                                                        .font(.caption2)
+                                                        .textSelection(.enabled)
+                                                }
+                                                if let errorMessage = runLog.errorMessage, !errorMessage.isEmpty {
+                                                    Text("错误: \(errorMessage)")
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.red)
+                                                        .textSelection(.enabled)
+                                                }
                                                 if let executablePath = runLog.executablePath {
                                                     Text("执行文件: \(executablePath)")
                                                         .font(.caption2)
@@ -287,7 +305,7 @@ struct ViewerPage: View {
                                         }
                                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                                     } else {
-                                        Text("未找到 YAML")
+                                        Text("未找到 DesignIR")
                                             .foregroundStyle(.secondary)
                                     }
                                 }
@@ -300,6 +318,9 @@ struct ViewerPage: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            harmonyWorkflowColumn
+                .frame(width: 420)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
@@ -312,6 +333,219 @@ struct ViewerPage: View {
                     .padding(.vertical, 8)
                     .background(.ultraThinMaterial, in: Capsule())
                     .padding()
+            }
+        }
+    }
+
+    private var harmonyWorkflowColumn: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Harmony / ArkUI")
+                .font(.title3.bold())
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Button {
+                            viewModel.importDesignPackageDirectoryUsingPanel()
+                        } label: {
+                            Label("导入设计包目录", systemImage: "folder.badge.plus")
+                        }
+                        Button {
+                            viewModel.importDesignPackageZipUsingPanel()
+                        } label: {
+                            Label("导入 Zip", systemImage: "shippingbox")
+                        }
+                    }
+
+                    if let package = viewModel.importedDesignPackage {
+                        packageSummary(package)
+                        packagePreview
+                        designTree
+                        designIssues
+                        targetProjectControls
+                        generationReport
+                    } else {
+                        EmptyStateView(title: "未导入设计包", systemImage: "shippingbox")
+                            .frame(minHeight: 240)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func packageSummary(_ package: PersistedDesignPackage) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(package.design.screenName)
+                .font(.headline)
+            Text(package.manifest.packageID)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            Text("\(package.design.fileKey) / \(package.design.nodeId)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            Text(package.packageDirectory.path)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+    }
+
+    @ViewBuilder
+    private var packagePreview: some View {
+        if let previewURL = viewModel.importedDesignPackagePreviewURL,
+           let image = NSImage(contentsOf: previewURL) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("预览")
+                    .font(.headline)
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 180)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .onTapGesture(count: 2) {
+                        DesktopSupport.openFile(previewURL)
+                    }
+            }
+        }
+    }
+
+    private var designTree: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("DesignIR 树")
+                .font(.headline)
+            if viewModel.designTreeItems.isEmpty {
+                Text("暂无节点")
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView([.horizontal, .vertical]) {
+                    OutlineGroup(viewModel.designTreeItems, children: \.children) { item in
+                        HStack(spacing: 6) {
+                            Text(item.title)
+                            Text(item.subtitle)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            if item.isNeedsReview {
+                                Text("needsReview")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(.orange)
+                            }
+                            if let badge = item.badge {
+                                Text(badge)
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 140, maxHeight: 220)
+            }
+        }
+    }
+
+    private var designIssues: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Warnings / Needs Review")
+                .font(.headline)
+            if viewModel.designIssues.isEmpty {
+                Text("无 warnings 或 needsReview")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(viewModel.designIssues) { issue in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(issue.severity.rawValue)
+                                .font(.caption2.bold())
+                                .foregroundStyle(issue.severity == .needsReview ? .orange : .red)
+                            Text(issue.nodePath)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                            Text(issue.message)
+                                .font(.caption)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+    }
+
+    private var targetProjectControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("目标项目")
+                .font(.headline)
+            HStack {
+                TextField("Harmony 项目目录", text: $viewModel.harmonyProjectPath)
+                    .textFieldStyle(.roundedBorder)
+                Button {
+                    viewModel.selectHarmonyProjectDirectoryUsingPanel()
+                } label: {
+                    Label("选择目录", systemImage: "folder")
+                        .labelStyle(.iconOnly)
+                }
+                .help("选择目录")
+            }
+            TextField("页面名", text: $viewModel.harmonyPageName)
+                .textFieldStyle(.roundedBorder)
+            Toggle("覆盖同名 .ets 和资源文件", isOn: $viewModel.harmonyOverwriteExistingFiles)
+            Toggle("目标目录不存在时创建", isOn: $viewModel.harmonyCreateTargetDirectory)
+            HStack {
+                Button {
+                    viewModel.generateHarmonyProject()
+                } label: {
+                    Label("生成 ArkUI", systemImage: "hammer")
+                }
+                .disabled(!viewModel.canGenerateHarmonyProject)
+
+                Button {
+                    viewModel.openHarmonyProjectInFinder()
+                } label: {
+                    Label("打开项目", systemImage: "folder")
+                }
+                .disabled(viewModel.harmonyProjectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var generationReport: some View {
+        if !viewModel.harmonyReportText.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("生成报告")
+                        .font(.headline)
+                    Spacer()
+                    Button {
+                        viewModel.openHarmonyReport()
+                    } label: {
+                        Label("打开报告", systemImage: "doc.text")
+                            .labelStyle(.iconOnly)
+                    }
+                    .disabled(viewModel.harmonyReportPath == nil)
+                    .help("打开报告")
+                }
+                if let reportPath = viewModel.harmonyReportPath {
+                    Text(reportPath)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                ScrollView([.horizontal, .vertical]) {
+                    Text(viewModel.harmonyReportText)
+                        .font(.body.monospaced())
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 160, maxHeight: 260)
             }
         }
     }

@@ -23,10 +23,16 @@ extension AgentService: AgentRunning {
 public struct GenerationCoordinator: Sendable {
     public let batchStore: BatchStore
     public let agentRunner: AgentRunning
+    private let resultParser: AgentGenerationResultParser
 
-    public init(batchStore: BatchStore, agentRunner: AgentRunning) {
+    public init(
+        batchStore: BatchStore,
+        agentRunner: AgentRunning,
+        resultParser: AgentGenerationResultParser = AgentGenerationResultParser()
+    ) {
         self.batchStore = batchStore
         self.agentRunner = agentRunner
+        self.resultParser = resultParser
     }
 
     public func generate(
@@ -155,8 +161,8 @@ public struct GenerationCoordinator: Sendable {
         }
         try Task.checkCancellation()
         let prompt = PromptBuilder.makeSinglePrompt(template: promptTemplate, item: item)
-        let yamlDirectory = BatchStore.itemDirectory(in: batchDirectory, item: item).appendingPathComponent("yaml", isDirectory: true)
-        try FileManager.default.createDirectory(at: yamlDirectory, withIntermediateDirectories: true)
+        let designDirectory = makeDesignIRDirectory(for: item, batchDirectory: batchDirectory)
+        try FileManager.default.createDirectory(at: designDirectory, withIntermediateDirectories: true)
 
         do {
             let result = try await agentRunner.run(provider: provider, prompt: prompt, item: item) { event in
@@ -164,32 +170,52 @@ public struct GenerationCoordinator: Sendable {
                     await itemEvent(item.id, event)
                 }
             }
-            let yamlURL = yamlDirectory.appendingPathComponent("figma-node-\(BatchStore.pathSafe(item.nodeId)).yaml")
-            let rawOutputURL = yamlDirectory.appendingPathComponent("agent-output.txt")
+            let designURL = makeDesignIRURL(for: item, batchDirectory: batchDirectory)
+            let rawOutputURL = makeRawOutputURL(for: item, batchDirectory: batchDirectory)
             try result.output.write(to: rawOutputURL, atomically: true, encoding: .utf8)
-            try result.output.write(to: yamlURL, atomically: true, encoding: .utf8)
-            resolvedItem.generatedYAMLPath = yamlURL.path
-            resolvedItem.agentOutputPath = rawOutputURL.path
-            resolvedItem.generationStatus = .success
-            resolvedItem.errorMessage = nil
-            resolvedItem.logSummary = "\(provider.displayName) 已执行：\(result.executablePath)"
+            do {
+                let parsed = try resultParser.parse(result.output, expectedItem: item)
+                try parsed.normalizedJSON.write(to: designURL, atomically: true, encoding: .utf8)
+                resolvedItem.generatedYAMLPath = designURL.path
+                resolvedItem.agentOutputPath = rawOutputURL.path
+                resolvedItem.generationStatus = .success
+                resolvedItem.errorMessage = nil
+                resolvedItem.logSummary = "\(provider.displayName) 已执行：\(result.executablePath)"
+            } catch {
+                resolvedItem.generatedYAMLPath = nil
+                resolvedItem.agentOutputPath = rawOutputURL.path
+                resolvedItem.generationStatus = .failed
+                resolvedItem.errorMessage = error.localizedDescription
+                resolvedItem.logSummary = "DesignIR 解析失败"
+                if let itemEvent {
+                    await itemEvent(item.id, .failed(message: error.localizedDescription))
+                }
+            }
         } catch is CancellationError {
-            resolvedItem.generationStatus = .cancelled
-            resolvedItem.generatedYAMLPath = nil
-            resolvedItem.agentOutputPath = nil
-            resolvedItem.errorMessage = nil
-            resolvedItem.logSummary = "已取消"
+            resolvedItem = recoveredGeneratedItemIfPresent(
+                resolvedItem,
+                batchDirectory: batchDirectory,
+                rawOutputURL: makeRawOutputURL(for: item, batchDirectory: batchDirectory)
+            ) ?? cancelledItem(resolvedItem)
             if let itemEvent {
                 await itemEvent(item.id, .cancelled)
             }
         } catch {
-            resolvedItem.generationStatus = .failed
-            resolvedItem.generatedYAMLPath = nil
-            resolvedItem.agentOutputPath = nil
-            resolvedItem.errorMessage = error.localizedDescription
-            resolvedItem.logSummary = "执行失败"
-            if let itemEvent {
-                await itemEvent(item.id, .failed(message: error.localizedDescription))
+            if let recovered = recoveredGeneratedItemIfPresent(
+                resolvedItem,
+                batchDirectory: batchDirectory,
+                rawOutputURL: makeRawOutputURL(for: item, batchDirectory: batchDirectory)
+            ) {
+                resolvedItem = recovered
+            } else {
+                resolvedItem.generationStatus = .failed
+                resolvedItem.generatedYAMLPath = nil
+                resolvedItem.agentOutputPath = nil
+                resolvedItem.errorMessage = error.localizedDescription
+                resolvedItem.logSummary = "执行失败"
+                if let itemEvent {
+                    await itemEvent(item.id, .failed(message: error.localizedDescription))
+                }
             }
         }
 
@@ -234,19 +260,44 @@ public struct GenerationCoordinator: Sendable {
             }
             try FileManager.default.createDirectory(at: rawOutputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try result.output.write(to: rawOutputURL, atomically: true, encoding: .utf8)
+        } catch is CancellationError {
+            var completed = 0
+            for index in resolvedItems.indices {
+                resolvedItems[index] = recoveredGeneratedItemIfPresent(
+                    resolvedItems[index],
+                    batchDirectory: batchDirectory,
+                    rawOutputURL: rawOutputURL
+                ) ?? cancelledItem(resolvedItems[index])
+                if let itemEvent {
+                    await itemEvent(resolvedItems[index].id, .cancelled)
+                }
+                completed += 1
+                if let progress {
+                    await progress(completed, resolvedItems.count, resolvedItems[index])
+                }
+            }
+            return resolvedItems
         } catch {
             var completed = 0
             for index in resolvedItems.indices {
-                finalizeBatchItem(
-                    &resolvedItems[index],
-                    status: .failed,
-                    errorMessage: error.localizedDescription,
-                    yamlPath: nil,
-                    agentOutputPath: nil,
-                    logSummary: "执行失败"
-                )
-                if let itemEvent {
-                    await itemEvent(resolvedItems[index].id, .failed(message: error.localizedDescription))
+                if let recovered = recoveredGeneratedItemIfPresent(
+                    resolvedItems[index],
+                    batchDirectory: batchDirectory,
+                    rawOutputURL: rawOutputURL
+                ) {
+                    resolvedItems[index] = recovered
+                } else {
+                    finalizeBatchItem(
+                        &resolvedItems[index],
+                        status: .failed,
+                        errorMessage: error.localizedDescription,
+                        designIRPath: nil,
+                        agentOutputPath: nil,
+                        logSummary: "执行失败"
+                    )
+                    if let itemEvent {
+                        await itemEvent(resolvedItems[index].id, .failed(message: error.localizedDescription))
+                    }
                 }
                 completed += 1
                 if let progress {
@@ -255,21 +306,24 @@ public struct GenerationCoordinator: Sendable {
             }
             return resolvedItems
         }
-        let outputMap = MultiYAMLOutputParser.parse(result.output)
+        let outputMap = SegmentedAgentOutputParser.parse(result.output)
 
         var completed = 0
         for index in resolvedItems.indices {
             let item = resolvedItems[index]
-            let key = MultiYAMLOutputParser.ResultKey(fileKey: item.fileKey, nodeId: item.nodeId)
-            guard let yamlText = outputMap[key], !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let key = SegmentedAgentOutputParser.ResultKey(fileKey: item.fileKey, nodeId: item.nodeId)
+            guard let designText = outputMap[key], !designText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 finalizeBatchItem(
                     &resolvedItems[index],
                     status: .failed,
-                    errorMessage: "agent 输出缺少该链接的 YAML 分段",
-                    yamlPath: nil,
+                    errorMessage: "agent 输出缺少该链接的 DesignIR 分段",
+                    designIRPath: nil,
                     agentOutputPath: rawOutputURL.path,
                     logSummary: "执行失败"
                 )
+                if let itemEvent {
+                    await itemEvent(item.id, .failed(message: resolvedItems[index].errorMessage ?? "agent 输出缺少该链接的 DesignIR 分段"))
+                }
                 completed += 1
                 if let progress {
                     await progress(completed, resolvedItems.count, resolvedItems[index])
@@ -277,19 +331,34 @@ public struct GenerationCoordinator: Sendable {
                 continue
             }
 
-            let yamlDirectory = BatchStore.itemDirectory(in: batchDirectory, item: item).appendingPathComponent("yaml", isDirectory: true)
-            try FileManager.default.createDirectory(at: yamlDirectory, withIntermediateDirectories: true)
-            let yamlURL = yamlDirectory.appendingPathComponent("figma-node-\(BatchStore.pathSafe(item.nodeId)).yaml")
-            try yamlText.write(to: yamlURL, atomically: true, encoding: .utf8)
+            let designDirectory = makeDesignIRDirectory(for: item, batchDirectory: batchDirectory)
+            try FileManager.default.createDirectory(at: designDirectory, withIntermediateDirectories: true)
+            let designURL = makeDesignIRURL(for: item, batchDirectory: batchDirectory)
 
-            finalizeBatchItem(
-                &resolvedItems[index],
-                status: .success,
-                errorMessage: nil,
-                yamlPath: yamlURL.path,
-                agentOutputPath: rawOutputURL.path,
-                logSummary: "\(provider.displayName) 已执行：\(result.executablePath)"
-            )
+            do {
+                let parsed = try resultParser.parse(designText, expectedItem: item)
+                try parsed.normalizedJSON.write(to: designURL, atomically: true, encoding: .utf8)
+                finalizeBatchItem(
+                    &resolvedItems[index],
+                    status: .success,
+                    errorMessage: nil,
+                    designIRPath: designURL.path,
+                    agentOutputPath: rawOutputURL.path,
+                    logSummary: "\(provider.displayName) 已执行：\(result.executablePath)"
+                )
+            } catch {
+                finalizeBatchItem(
+                    &resolvedItems[index],
+                    status: .failed,
+                    errorMessage: error.localizedDescription,
+                    designIRPath: nil,
+                    agentOutputPath: rawOutputURL.path,
+                    logSummary: "DesignIR 解析失败"
+                )
+                if let itemEvent {
+                    await itemEvent(item.id, .failed(message: error.localizedDescription))
+                }
+            }
 
             completed += 1
             if let progress {
@@ -304,20 +373,78 @@ public struct GenerationCoordinator: Sendable {
         _ item: inout FigmaLinkItem,
         status: GenerationStatus,
         errorMessage: String?,
-        yamlPath: String?,
+        designIRPath: String?,
         agentOutputPath: String?,
         logSummary: String
     ) {
         item.generationStatus = status
-        item.generatedYAMLPath = yamlPath
+        item.generatedYAMLPath = designIRPath
         item.agentOutputPath = agentOutputPath
         item.errorMessage = errorMessage
         item.logSummary = logSummary
     }
 
+    private func cancelledItem(_ item: FigmaLinkItem) -> FigmaLinkItem {
+        var updated = item
+        updated.generationStatus = .cancelled
+        updated.generatedYAMLPath = nil
+        updated.agentOutputPath = nil
+        updated.errorMessage = nil
+        updated.logSummary = "已取消"
+        return updated
+    }
+
+    private func recoveredGeneratedItemIfPresent(
+        _ item: FigmaLinkItem,
+        batchDirectory: URL,
+        rawOutputURL: URL?
+    ) -> FigmaLinkItem? {
+        let designURL = makeDesignIRURL(for: item, batchDirectory: batchDirectory)
+        guard designFileCanBeLoaded(at: designURL) else {
+            return nil
+        }
+
+        var recovered = item
+        recovered.generatedYAMLPath = designURL.path
+        if let rawOutputURL, FileManager.default.fileExists(atPath: rawOutputURL.path) {
+            recovered.agentOutputPath = rawOutputURL.path
+        } else {
+            let itemRawOutputURL = makeRawOutputURL(for: item, batchDirectory: batchDirectory)
+            if FileManager.default.fileExists(atPath: itemRawOutputURL.path) {
+                recovered.agentOutputPath = itemRawOutputURL.path
+            }
+        }
+        recovered.generationStatus = .success
+        recovered.errorMessage = nil
+        recovered.logSummary = "已恢复 DesignIR"
+        return recovered
+    }
+
+    private func designFileCanBeLoaded(at url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url),
+              !data.isEmpty else {
+            return false
+        }
+        return (try? JSONDecoder().decode(DesignIR.self, from: data)) != nil
+    }
+
     private func makeBatchRawOutputURL(for item: FigmaLinkItem, batchDirectory: URL) -> URL {
+        makeRawOutputURL(for: item, batchDirectory: batchDirectory)
+    }
+
+    private func makeDesignIRDirectory(for item: FigmaLinkItem, batchDirectory: URL) -> URL {
         BatchStore.itemDirectory(in: batchDirectory, item: item)
-            .appendingPathComponent("yaml", isDirectory: true)
+            .appendingPathComponent("design-ir", isDirectory: true)
+    }
+
+    private func makeDesignIRURL(for item: FigmaLinkItem, batchDirectory: URL) -> URL {
+        makeDesignIRDirectory(for: item, batchDirectory: batchDirectory)
+            .appendingPathComponent(DesignPackageStore.designFilename)
+    }
+
+    private func makeRawOutputURL(for item: FigmaLinkItem, batchDirectory: URL) -> URL {
+        makeDesignIRDirectory(for: item, batchDirectory: batchDirectory)
             .appendingPathComponent("agent-output.txt")
     }
 }
@@ -331,14 +458,59 @@ enum BatchNaming {
 }
 
 enum PromptBuilder {
+    private static let designIRInstructions = """
+    FigBridge requires strict DesignIR output.
+    Important: FigBridge has already retrieved Figma data before invoking you. Do not call Figma MCP or any external Figma fallback, even if the user template says to do so.
+    Output must be exactly one DesignIR JSON or YAML object with these required top-level fields:
+    version, screenName, fileKey, nodeId, targetPlatform, viewport, tokens, rootNode, warnings.
+    Use version "\(DesignIR.currentVersion)" and targetPlatform "\(TargetPlatform.harmonyArkUI.rawValue)".
+
+    CRITICAL FORMAT REQUIREMENTS:
+    1. tokens.colors MUST be an array: [{"name":"tokenName","value":"#RRGGBB"}, ...]. Do NOT use object format like {"tokenName":"#RRGGBB"}
+    2. tokens.textStyles MUST be an array: [{"name":"tokenName","style":{...text style fields...}}]
+    3. tokens.spacing and tokens.radii MUST be objects: {"tokenName": number}
+    4. Every layout.padding (if present) MUST include all four sides: top, right, bottom, left (as numbers, default to 0 if not specified)
+    5. Every node must include: id, name, type, children, needsReview, warnings
+    6. rootNode.type must be "frame"
+    7. When the local context uses a semantic color token name in style.fill, style.stroke, or style.text.color, keep that exact token name and include the corresponding entry in tokens.colors.
+    8. For image/icon nodes, preserve cached asset.name exactly. asset.localPath MUST be package-relative, like "assets/icon_bot_24.svg"; never output an absolute filesystem path.
+
+    Example tokens.colors format:
+    "tokens": {
+      "colors": [
+        {"name": "primary", "value": "#3498DB"},
+        {"name": "secondary", "value": "#2ECC71"}
+      ],
+      ...
+    }
+
+    Example layout.padding format (if padding exists):
+    "layout": {
+      "mode": "horizontal",
+      "padding": {
+        "top": 0,
+        "right": 16,
+        "bottom": 0,
+        "left": 16
+      }
+    }
+
+    Do not include Markdown code fences, comments, prose, or fallback descriptions.
+    """
+
     static func makeSinglePrompt(template: String, item: FigmaLinkItem) -> String {
         """
         \(template)
+
+        \(designIRInstructions)
 
         Figma URL: \(item.url)
         File Key: \(item.fileKey)
         Node ID: \(item.nodeId)
         Title: \(item.title ?? "")
+        Node Name: \(item.nodeName ?? "")
+
+        \(figmaContextInstructions(for: item))
         """
     }
 
@@ -350,38 +522,99 @@ enum PromptBuilder {
             File Key: \(item.fileKey)
             Node ID: \(item.nodeId)
             Title: \(item.title ?? "")
+            Node Name: \(item.nodeName ?? "")
+
+            \(figmaContextInstructions(for: item))
             """
         }.joined(separator: "\n\n")
 
         return """
         \(template)
 
-        You will process multiple Figma links. Output one YAML for each link and strictly use the segmented format below:
+        \(designIRInstructions)
 
-        <<<FIGBRIDGE_YAML_START fileKey=<fileKey> nodeId=<nodeId>>>
-        <YAML content>
-        <<<FIGBRIDGE_YAML_END>>>
+        You will process multiple Figma links. Output one DesignIR JSON/YAML object for each link and strictly use the segmented format below:
+
+        <<<FIGBRIDGE_DESIGN_IR_START fileKey=<fileKey> nodeId=<nodeId>>>
+        <DesignIR JSON/YAML content>
+        <<<FIGBRIDGE_DESIGN_IR_END>>>
 
         Rules:
         1. Each input link must produce exactly one segment.
         2. The fileKey and nodeId in each segment must exactly match the input.
-        3. Do not include markdown code block markers in YAML content.
+        3. Do not include markdown code block markers in DesignIR content.
         4. Do not output any explanatory text outside the segments above.
 
         Links to process:
         \(itemLines)
         """
     }
+
+    private static func figmaContextInstructions(for item: FigmaLinkItem) -> String {
+        var lines: [String] = [
+            "FigBridge local Figma context:",
+            "- Do not fetch this Figma node again.",
+            "- Treat the local DesignIR seed as the primary source of truth when present.",
+            "- The local seed may already resolve Figma semantic colors to tokens.colors and icon/image nodes to cached local library assets.",
+        ]
+
+        if let previewImagePath = item.previewImagePath {
+            lines.append("- Preview image path: \(previewImagePath)")
+        }
+        if let figmaNodeJSONPath = item.figmaNodeJSONPath {
+            lines.append("- Raw Figma node JSON path: \(figmaNodeJSONPath)")
+        }
+        if let figmaDerivedDesignIRPath = item.figmaDerivedDesignIRPath {
+            lines.append("- FigBridge-derived DesignIR seed path: \(figmaDerivedDesignIRPath)")
+            if let context = inlineFileContext(at: figmaDerivedDesignIRPath) {
+                lines.append(
+                    """
+                    FigBridge-derived DesignIR seed content:
+                    <<<FIGBRIDGE_LOCAL_DESIGN_IR_CONTEXT_START>>>
+                    \(context)
+                    <<<FIGBRIDGE_LOCAL_DESIGN_IR_CONTEXT_END>>>
+                    """
+                )
+            }
+        }
+
+        if !item.resourceItems.isEmpty {
+            let resources = item.resourceItems.map { resource in
+                let cachedPath = resource.localPath ?? ""
+                let assetPath = cachedPath.isEmpty ? "" : DesignIRAssetPathNormalizer.packageRelativeAssetPath(fromCachedPath: cachedPath)
+                return "- \(resource.name) [\(resource.kind.rawValue), \(resource.format.rawValue)] asset.localPath=\(assetPath) cachedFile=\(cachedPath)"
+            }.joined(separator: "\n")
+            lines.append("Cached resources:\n\(resources)")
+        }
+
+        if item.figmaDerivedDesignIRPath == nil {
+            lines.append("- No local DesignIR seed is available. Create the best strict DesignIR you can from the provided metadata and include a warning about missing local Figma context.")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private static func inlineFileContext(at path: String) -> String? {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return nil
+        }
+        let limit = 60_000
+        guard text.count > limit else {
+            return text
+        }
+        let prefix = text.prefix(limit)
+        return "\(prefix)\n... truncated by FigBridge after \(limit) characters; read the local file path above if more context is needed."
+    }
 }
 
-enum MultiYAMLOutputParser {
+enum SegmentedAgentOutputParser {
     struct ResultKey: Hashable {
         let fileKey: String
         let nodeId: String
     }
 
     static func parse(_ output: String) -> [ResultKey: String] {
-        let pattern = #"<<<FIGBRIDGE_YAML_START\s+fileKey=([^\s>]+)\s+nodeId=([^\s>]+)>>>[\r\n]+([\s\S]*?)<<<FIGBRIDGE_YAML_END>>>"#
+        let pattern = #"<<<FIGBRIDGE_(?:DESIGN_IR|YAML)_START\s+fileKey=([^\s>]+)\s+nodeId=([^\s>]+)>>>[\r\n]+([\s\S]*?)<<<FIGBRIDGE_(?:DESIGN_IR|YAML)_END>>>"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
             return [:]
         }
@@ -391,8 +624,8 @@ enum MultiYAMLOutputParser {
         for match in matches where match.numberOfRanges == 4 {
             let fileKey = source.substring(with: match.range(at: 1))
             let nodeId = source.substring(with: match.range(at: 2))
-            let yamlText = source.substring(with: match.range(at: 3)).trimmingCharacters(in: .whitespacesAndNewlines)
-            result[ResultKey(fileKey: fileKey, nodeId: nodeId)] = yamlText
+            let designText = source.substring(with: match.range(at: 3)).trimmingCharacters(in: .whitespacesAndNewlines)
+            result[ResultKey(fileKey: fileKey, nodeId: nodeId)] = designText
         }
         return result
     }
